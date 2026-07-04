@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Tender CRM</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    body{margin:0;font-family:Arial,sans-serif;background:#f4f6f8;color:#17212b}
+    .app{display:grid;grid-template-columns:230px 1fr;min-height:100vh}
+    aside{background:#111827;color:#fff;padding:22px}
+    .brand{font-size:22px;font-weight:700;margin-bottom:24px}
+    nav button{display:block;width:100%;margin:6px 0;padding:12px;border:0;border-radius:8px;background:transparent;color:#cbd5e1;text-align:left;cursor:pointer}
+    nav button.active,nav button:hover{background:#263244;color:white}
+    main{padding:24px}
+    header{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:18px}
+    h1{margin:0}.muted{color:#64748b}.hidden{display:none!important}
+    .card{background:white;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:14px}
+    .grid{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:14px}
+    .metric{font-size:26px;font-weight:700;margin-top:8px}
+    input,select{padding:10px;border:1px solid #d1d5db;border-radius:8px}
+    button{font:inherit}.primary{background:#0f766e;color:white;border:0;border-radius:8px;padding:10px 14px;cursor:pointer}
+    .ghost{background:white;border:1px solid #d1d5db;border-radius:8px;padding:10px 14px;cursor:pointer}
+    table{width:100%;border-collapse:collapse;background:white;border-radius:8px;overflow:hidden}
+    th,td{padding:12px;border-bottom:1px solid #e5e7eb;text-align:left}
+    th{background:#f8fafc;color:#475569;font-size:13px}
+    dialog{border:0;border-radius:10px;max-width:720px;width:92%;padding:0}
+    form{padding:20px}.form{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    label{display:grid;gap:6px}.wide{grid-column:1/-1}
+    @media(max-width:850px){.app{grid-template-columns:1fr}.grid{grid-template-columns:1fr 1fr}header{display:block}}
+  </style>
+</head>
+<body>
+<div id="login" class="card" style="max-width:420px;margin:60px auto">
+  <h1>Tender CRM</h1>
+  <p class="muted">Вход для сотрудников</p>
+  <label>Email<input id="email" type="email" placeholder="you@example.com"></label><br>
+  <label>Пароль<input id="password" type="password" placeholder="Минимум 6 символов"></label><br>
+  <button class="primary" onclick="signIn()">Войти</button>
+  <button class="ghost" onclick="signUp()">Создать пользователя</button>
+  <p id="authMsg" class="muted"></p>
+</div>
+
+<div id="app" class="app hidden">
+  <aside>
+    <div class="brand">Tender CRM</div>
+    <nav id="nav">
+      <button class="active" data-view="dashboard">Панель</button>
+      <button data-view="tasks">Задачи</button>
+      <button data-view="tenders">Тендеры</button>
+      <button data-view="partners">Партнеры</button>
+      <button data-view="payments">Финансы</button>
+      <button data-view="documents">Документы</button>
+    </nav>
+    <button class="ghost" onclick="signOut()">Выйти</button>
+  </aside>
+  <main>
+    <header>
+      <div><h1 id="title">Панель</h1><div class="muted">Тендеры, задачи, деньги, документы</div></div>
+      <button class="primary" onclick="openForm(view)">+ Добавить</button>
+    </header>
+    <section id="root"></section>
+  </main>
+</div>
+
+<dialog id="modal">
+  <form method="dialog" onsubmit="saveEntity(event)">
+    <h2 id="modalTitle">Новая запись</h2>
+    <div class="form" id="fields"></div>
+    <p><button class="ghost" value="cancel">Отмена</button> <button class="primary">Сохранить</button></p>
+  </form>
+</dialog>
+
+<script>
+const SUPABASE_URL = "https://bzcysplvgypigqqxcbxa.supabase.co";
+const SUPABASE_KEY = "sb_publishable_hU81STfCX2j19hNmNIdFKQ_4CNdTlV5";
+const client = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+let view = "dashboard";
+let state = {partners:[],tenders:[],tasks:[],payments:[],documents:[]};
+
+const labels = {dashboard:"Панель руководителя",tasks:"Задачи",tenders:"Тендеры",partners:"Партнеры",payments:"Финансы",documents:"Документы"};
+const fieldsMap = {
+  tasks:["title","assignee","due_date","status","priority","amount"],
+  tenders:["title","customer","amount","deadline","status","responsible"],
+  partners:["name","contact","phone","balance","status"],
+  payments:["title","type","category","amount","due_date","status"],
+  documents:["title","type","owner","due_date","status"]
+};
+const names = {title:"Название",assignee:"Ответственный",due_date:"Срок",status:"Статус",priority:"Приоритет",amount:"Сумма",customer:"Заказчик",deadline:"Дедлайн",responsible:"Ответственный",name:"Название",contact:"Контакт",phone:"Телефон",balance:"Баланс",type:"Тип",category:"Категория",owner:"Владелец"};
+
+async function signUp(){
+  const {error} = await client.auth.signUp({email:email.value,password:password.value});
+  authMsg.textContent = error ? error.message : "Пользователь создан. Если Supabase попросит, подтвердите email.";
+}
+async function signIn(){
+  const {error} = await client.auth.signInWithPassword({email:email.value,password:password.value});
+  authMsg.textContent = error ? error.message : "Вход выполнен";
+  checkSession();
+}
+async function signOut(){ await client.auth.signOut(); location.reload(); }
+
+async function checkSession(){
+  const {data} = await client.auth.getSession();
+  login.classList.toggle("hidden", !!data.session);
+  app.classList.toggle("hidden", !data.session);
+  if(data.session) await loadAll();
+}
+
+async function loadAll(){
+  for(const table of ["partners","tenders","tasks","payments","documents"]){
+    const {data,error} = await client.from(table).select("*").order("created_at",{ascending:false});
+    if(error){ root.innerHTML = `<div class="card">Ошибка: ${error.message}</div>`; return; }
+    state[table] = data || [];
+  }
+  render();
+}
+
+nav.onclick = e => {
+  if(!e.target.dataset.view) return;
+  view = e.target.dataset.view;
+  document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("active",b.dataset.view===view));
+  render();
+};
+
+function money(n){return new Intl.NumberFormat("ru-KZ",{style:"currency",currency:"KZT",maximumFractionDigits:0}).format(Number(n||0))}
+function render(){
+  title.textContent = labels[view];
+  if(view==="dashboard") return renderDashboard();
+  renderTable(view);
+}
+function renderDashboard(){
+  const active = state.tasks.filter(x=>x.status!=="Выполнено").length;
+  const income = state.payments.filter(x=>x.type==="Доход").reduce((s,x)=>s+Number(x.amount||0),0);
+  const expense = state.payments.filter(x=>x.type!=="Доход").reduce((s,x)=>s+Number(x.amount||0),0);
+  root.innerHTML = `<div class="grid">
+    <div class="card">Активные задачи<div class="metric">${active}</div></div>
+    <div class="card">Тендеры<div class="metric">${state.tenders.length}</div></div>
+    <div class="card">К получению<div class="metric">${money(income)}</div></div>
+    <div class="card">К оплате<div class="metric">${money(expense)}</div></div>
+  </div><div class="card"><h3>Последние задачи</h3>${makeTable("tasks",state.tasks.slice(0,5))}</div>`;
+}
+function renderTable(type){ root.innerHTML = makeTable(type,state[type]); }
+function makeTable(type,rows){
+  const cols = fieldsMap[type];
+  return `<table><thead><tr>${cols.map(c=>`<th>${names[c]}</th>`).join("")}<th></th></tr></thead><tbody>
+  ${rows.map(r=>`<tr>${cols.map(c=>`<td>${c==="amount"||c==="balance"?money(r[c]):(r[c]||"")}</td>`).join("")}
+  <td><button class="ghost" onclick="deleteRow('${type}','${r.id}')">Удалить</button></td></tr>`).join("")}</tbody></table>`;
+}
+function openForm(type){
+  if(type==="dashboard") type="tasks";
+  view = type;
+  modalTitle.textContent = "Новая запись: " + labels[type];
+  fields.innerHTML = fieldsMap[type].map(f=>`<label>${names[f]}<input name="${f}" ${f.includes("date")||f==="deadline"?"type=date":f==="amount"||f==="balance"?"type=number":""}></label>`).join("");
+  modal.showModal();
+}
+async function saveEntity(e){
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target).entries());
+  const {error} = await client.from(view).insert(data);
+  if(error) alert(error.message);
+  modal.close();
+  await loadAll();
+}
+async function deleteRow(type,id){
+  const {error} = await client.from(type).delete().eq("id",id);
+  if(error) alert(error.message);
+  await loadAll();
+}
+checkSession();
+</script>
+</body>
+</html>
