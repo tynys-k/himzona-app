@@ -37,7 +37,6 @@
   <label>Email<input id="email" type="email" placeholder="you@example.com"></label><br>
   <label>Пароль<input id="password" type="password" placeholder="Минимум 6 символов"></label><br>
   <button class="primary" onclick="signIn()">Войти</button>
-  <button class="ghost" onclick="signUp()">Создать пользователя</button>
   <p id="authMsg" class="muted"></p>
 </div>
 
@@ -88,11 +87,6 @@ const fieldsMap = {
   documents:["title","type","owner","due_date","status"]
 };
 const names = {title:"Название",assignee:"Ответственный",due_date:"Срок",status:"Статус",priority:"Приоритет",amount:"Сумма",customer:"Заказчик",deadline:"Дедлайн",responsible:"Ответственный",name:"Название",contact:"Контакт",phone:"Телефон",balance:"Баланс",type:"Тип",category:"Категория",owner:"Владелец"};
-
-async function signUp(){
-  const {error} = await client.auth.signUp({email:email.value,password:password.value});
-  authMsg.textContent = error ? error.message : "Пользователь создан. Если Supabase попросит, подтвердите email.";
-}
 async function signIn(){
   const {error} = await client.auth.signInWithPassword({email:email.value,password:password.value});
   authMsg.textContent = error ? error.message : "Вход выполнен";
