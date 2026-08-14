@@ -112,7 +112,7 @@ function Login() {
     <div className="kd-login">
       <form className="kd-login-card" onSubmit={submit}>
         <div className="kd-hazard" />
-        <div className="kd-logo-big"><span className="kd-logo-mark"><Bug size={19} strokeWidth={2.4} /></span>KazDez</div>
+        <div className="kd-logo-big"><span className="kd-logo-mark"><Bug size={19} strokeWidth={2.4} /></span>Himzona</div>
         <div className="kd-login-sub">Вход в систему</div>
         <label className="kd-field"><span>Почта</span><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@mail.kz" autoComplete="username" /></label>
         <label className="kd-field"><span>Пароль</span><input type="password" value={pass} onChange={(e) => setPass(e.target.value)} placeholder="••••••••" autoComplete="current-password" /></label>
@@ -164,7 +164,7 @@ function PublicJobPage({ token }) {
     <div className="kd-public">
       <main className="kd-public-card">
         <header className="kd-public-head">
-          <div className="kd-logo-big"><span className="kd-logo-mark"><Bug size={18} /></span>KazDez</div>
+          <div className="kd-logo-big"><span className="kd-logo-mark"><Bug size={18} /></span>Himzona</div>
           <span className="kd-public-id">Заявка #{String(job.job_id || "").slice(-6)}</span>
         </header>
         <section className="kd-public-hero">
@@ -495,7 +495,7 @@ function Dashboard({ session, profile }) {
   }
   function clientReminderWhatsappUrl(job) {
     const phone = String(job?.client_phone || "").replace(/\D/g, ""); if (!phone) return "";
-    const message = `Сәлеметсіз бе! KazDez компаниясынан еске саламыз: дезинфекция ${isoToRu(job.scheduled_date)} күні${job.scheduled_time ? `, сағат ${job.scheduled_time}` : ""} жоспарланған.\n\nЗдравствуйте! Напоминаем: дезинфекция запланирована на ${isoToRu(job.scheduled_date)}${job.scheduled_time ? `, время ${job.scheduled_time}` : ""}.`;
+    const message = `Сәлеметсіз бе! HimZona компаниясынан еске саламыз: дезинфекция ${isoToRu(job.scheduled_date)} күні${job.scheduled_time ? `, сағат ${job.scheduled_time}` : ""} жоспарланған.\n\nЗдравствуйте! Напоминаем: дезинфекция запланирована на ${isoToRu(job.scheduled_date)}${job.scheduled_time ? `, время ${job.scheduled_time}` : ""}.`;
     return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
   }
   async function openNotification(item) {
@@ -946,7 +946,7 @@ function Dashboard({ session, profile }) {
   }
   function upsellWhatsappUrl(job) {
     const phone = String(job.client_phone || "").replace(/\D/g, "");
-    const message = `Здравствуйте! Это KazDez. После выполненной обработки можем дополнительно предложить ${upsellFor(job)}. Если актуально — подберём удобную дату и рассчитаем стоимость.`;
+    const message = `Здравствуйте! Это HimZona. После выполненной обработки можем дополнительно предложить ${upsellFor(job)}. Если актуально — подберём удобную дату и рассчитаем стоимость.`;
     return phone ? `https://wa.me/${phone}?text=${encodeURIComponent(message)}` : "";
   }
   async function savePartner(payload, existing) {
@@ -1245,7 +1245,7 @@ function Dashboard({ session, profile }) {
     // создаём заявку из лида: телефон, адрес, источник
     const payload = {
       type: "Первичная", scheduled_date: null, address: lead.address || "", source: lead.source || "",
-      client_phone: lead.phone || "+7 ", brand: "KazDez", guarantee_months: defaultGuarantee,
+      client_phone: lead.phone || "+7 ", brand: "HimZona", guarantee_months: defaultGuarantee,
       pest: "", price_options: [], note: lead.name ? `Клиент: ${lead.name}` : null, created_by: session.user.id,
     };
     const { data, error } = await supabase.from("jobs").insert(payload).select().single();
@@ -1922,7 +1922,7 @@ function Dashboard({ session, profile }) {
         <div className="kd-hazard" />
         <div className="kd-brand">
           <div className="kd-logo"><Bug size={19} strokeWidth={2.4} /></div>
-          <div><div className="kd-brand-name">KazDez</div><div className="kd-brand-sub">{ROLE_DEFINITIONS[profile?.role]?.label || "Сотрудник"} · {actorName}</div></div>
+          <div><div className="kd-brand-name">HimZona</div><div className="kd-brand-sub">{ROLE_DEFINITIONS[profile?.role]?.label || "Сотрудник"} · {actorName}</div></div>
         </div>
         <nav className="kd-tabs">
           {navGroups.map((group) => {
@@ -2728,7 +2728,7 @@ function Dashboard({ session, profile }) {
             </div>
 
             {qualityChecks.length > 0 && <section className="kd-card"><div className="kd-stage2head"><div><div className="kd-title">Результаты контроля и отзывы</div><div className="kd-muted">Оценки, проблемы и готовые запросы отзывов</div></div><Star size={20} /></div>
-              <div className="kd-followlist">{qualityChecks.slice(0, 20).map((q) => { const job = jobs.find((j) => j.id === q.job_id); if (!job) return null; const phone = String(job.client_phone || "").replace(/\D/g, ""); const reviewText = `Здравствуйте! Спасибо, что выбрали KazDez. Будем благодарны, если вы оставите отзыв о нашей работе: ${q.review_url || ""}`; return <div key={q.id}><div><strong>{job.client_phone} · оценка {q.rating || "—"}/5</strong><span>{({ positive: "всё хорошо", repeat: "нужен повтор", complaint: "претензия", no_answer: "не ответил" })[q.result] || q.result}</span>{q.note && <small>{q.note}</small>}</div><div className="actions"><button className="kd-btn ghost sm" onClick={() => setModal({ kind: "quality", job })}>Изменить</button>{q.review_requested && q.review_url && phone && <a className="kd-btn wa sm" href={`https://wa.me/${phone}?text=${encodeURIComponent(reviewText)}`} target="_blank" rel="noreferrer"><Star size={14} />Запросить отзыв</a>}</div></div>; })}</div>
+              <div className="kd-followlist">{qualityChecks.slice(0, 20).map((q) => { const job = jobs.find((j) => j.id === q.job_id); if (!job) return null; const phone = String(job.client_phone || "").replace(/\D/g, ""); const reviewText = `Здравствуйте! Спасибо, что выбрали HimZona. Будем благодарны, если вы оставите отзыв о нашей работе: ${q.review_url || ""}`; return <div key={q.id}><div><strong>{job.client_phone} · оценка {q.rating || "—"}/5</strong><span>{({ positive: "всё хорошо", repeat: "нужен повтор", complaint: "претензия", no_answer: "не ответил" })[q.result] || q.result}</span>{q.note && <small>{q.note}</small>}</div><div className="actions"><button className="kd-btn ghost sm" onClick={() => setModal({ kind: "quality", job })}>Изменить</button>{q.review_requested && q.review_url && phone && <a className="kd-btn wa sm" href={`https://wa.me/${phone}?text=${encodeURIComponent(reviewText)}`} target="_blank" rel="noreferrer"><Star size={14} />Запросить отзыв</a>}</div></div>; })}</div>
             </section>}
 
             <section className="kd-card"><div className="kd-stage2head"><div><div className="kd-title">Автоматические допродажи</div><div className="kd-muted">Предложение определяется по виду услуги и объекту</div></div><Sparkles size={20} /></div>
