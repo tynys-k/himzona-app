@@ -1,1 +1,3517 @@
+// KAZDEZ-USABILITY-YANDEX-2026-07-18
+// Этап 3: единое окно, SLA, клиент 360, жизненный цикл и публичная страница заявки.
+import React, { useState, useEffect } from "react";
+import { supabase } from "./supabaseClient";
+import { generateCertificate, generateAct } from "./pdfDocs";
+import ExcelJS from "exceljs";
+import {
+  ClipboardList, CheckCircle2, RefreshCw, Wallet, Package, Users, Handshake, FileText, History, Trash2,
+  Plus, MessageCircle, Pencil, UserPlus, Download, Search, X, LogOut, Bug, ChevronLeft, ChevronRight, Wrench, Settings, Receipt, Banknote, XCircle, ListTodo, Calendar, Landmark, ArrowRightLeft, ArrowDownCircle, ArrowUpCircle, Gavel, ShieldCheck, FolderOpen, ExternalLink, GraduationCap, Contact, ArrowRight, CalendarClock, LayoutDashboard, AlertTriangle, Phone, MapPin, TrendingUp, ClipboardCheck, Repeat2, Route, Star, Sparkles, UserRoundX, Navigation, Menu, Wifi, WifiOff, Bell, BellRing, Smartphone, CloudUpload, Camera,
+} from "lucide-react";
 
+// ----------------------------- helpers -----------------------------
+import { ADMIN_TAB_ORDER, AddressText, DEPOSIT_STATUS, DOC_STATUS, DRIVE_LINKS, DateFilterBar, DriveLinkCard, EQUIP_CATEGORIES, EQUIP_STATUS, EXPENSE_TYPES, GUARANTEE_KINDS, ROLE_DEFINITIONS, STATUS, TAB_LABELS, TASK_STATUS, TASK_TYPES, TENDER_STATUS, WEEKDAYS, addressPlain, buildMsg, chemUnit, copyText, dateInFilter, daysSince, effectivePermissions, fmt, fmtAmount, fmtTs, groupByDate, isoOf, isoToRu, jobTime, lineAmount, norm, parseIso, periodRange, pricePerBase, repeatLabel, timeRangeMin } from "./shared";
+import { AccountModal, AddChemModal, AssignModal, CancelJobModal, ConfirmDepositModal, ConfirmModal, ContractModal, DayOffModal, DepositModal, DetailsModal, DocModal, EquipModal, ExecutorDoneModal, ExpenseModal, FollowupModal, GuaranteeModal, HandoutModal, HistoryModal, IssueEquipModal, JobCard, JobEconomicsModal, JobFormModal, LeadModal, LeadStageSelectModal, MktChannelModal, MktTopupModal, MoveModal, OffCalendarModal, OpexModal, PartnerJobsModal, PartnerModal, PayGuaranteeModal, ProofModal, QualityModal, RejectDepositModal, RepeatCard, ReportEquipModal, ReportModal, ReportSuccessModal, RequestEditModal, ReturnGuaranteeModal, SettingsModal, StockInModal, TaskModal, TechEditModal, TechExtrasModal, TenderModal, TransferEquipModal, TransferPayModal, UserAccessModal, ViewModal, jobToForm } from "./modals";
+
+// Локальное описание этапов: совместимо с shared.jsx из предыдущей версии.
+const WORK_STAGE = {
+  new: { label: "Новая", short: "Новая", color: "#2563EB", bg: "#EAF1FE", step: 0 },
+  confirmed: { label: "Подтверждена", short: "Подтверждена", color: "#7C3AED", bg: "#F0EAFE", step: 1 },
+  assigned: { label: "Исполнитель назначен", short: "Назначена", color: "#B45309", bg: "#FCF1E2", step: 2 },
+  en_route: { label: "Исполнитель в пути", short: "В пути", color: "#0369A1", bg: "#E0F2FE", step: 3 },
+  on_site: { label: "Исполнитель на объекте", short: "На объекте", color: "#0F766E", bg: "#CCFBF1", step: 4 },
+  done: { label: "Работа выполнена", short: "Выполнена", color: "#0E7C66", bg: "#E4F3EE", step: 5 },
+  canceled: { label: "Заявка отменена", short: "Отменена", color: "#B3261E", bg: "#FBE7E5", step: -1 },
+};
+function jobWorkStage(job) {
+  if (job?.status === "done") return "done";
+  if (job?.status === "canceled") return "canceled";
+  if (WORK_STAGE[job?.work_stage]) return job.work_stage;
+  return job?.assigned_to ? "assigned" : "new";
+}
+
+function roleWhatsappUrl(job, isAdmin) {
+  const phone = String(job?.client_phone || "").replace(/\D/g, "");
+  if (!phone) return "";
+  if (isAdmin) return `https://wa.me/${phone}`;
+  const time = (String(job?.scheduled_time || "").match(/(?:[01]?\d|2[0-3]):[0-5]\d/) || [])[0];
+  const message = time
+    ? `Сәлеметсіз бе! Мен дезинфектормын, сізге дезинфекция бойынша жазып отырмын. Сіздерде сағат ${time}-де боламын.\n\nЗдравствуйте! Пишу по поводу дезинфекции. Я дезинфектор, приеду к вам к ${time}.`
+    : "Сәлеметсіз бе! Мен дезинфектормын, сізге дезинфекция бойынша жазып отырмын. Сіздерде келісілген уақытта боламын.\n\nЗдравствуйте! Пишу по поводу дезинфекции. Я дезинфектор, приеду к вам в согласованное время.";
+  return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
+}
+
+function yandexMapUrl(text) {
+  const raw = String(text || "").trim();
+  const existingYandex = (raw.match(/https?:\/\/(?:[^/\s]+\.)?yandex\.(?:ru|com|kz)\/maps[^\s]*/i) || [])[0];
+  if (existingYandex) return existingYandex;
+  let decoded = raw;
+  try { decoded = decodeURIComponent(raw); } catch { /* оставляем исходную строку */ }
+  const coords = decoded.match(/@(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)/)
+    || decoded.match(/[?&](?:q|query|destination)=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)/i);
+  if (coords) return `https://yandex.com/maps/?rtext=~${coords[1]},${coords[2]}&rtt=auto`;
+  const clean = addressPlain(raw);
+  return clean && clean !== "📍 точка на карте" ? `https://yandex.com/maps/?text=${encodeURIComponent(clean)}` : "https://yandex.com/maps/";
+}
+
+function yandexRouteUrl(addresses) {
+  const points = addresses.filter(Boolean).slice(0, 8);
+  if (!points.length) return "https://yandex.com/maps/routes/";
+  const rtext = points.length === 1 ? `~${points[0]}` : points.join("~");
+  return `https://yandex.com/maps/?rtext=${encodeURIComponent(rtext)}&rtt=auto`;
+}
+
+class AppErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { failed: false }; }
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(error) { console.error("KazDez UI error", error); }
+  render() {
+    if (this.state.failed) return <div className="kd-crash"><div><Bug size={30} /><h1>Интерфейс временно не загрузился</h1><p>Данные не потеряны. Обнови страницу; если ошибка повторится, проверь последнюю сборку Vercel.</p><button className="kd-btn primary" onClick={() => window.location.reload()}>Обновить страницу</button></div></div>;
+    return this.props.children;
+  }
+}
+
+function AppContent() {
+  const publicToken = new URLSearchParams(window.location.search).get("track");
+  const [session, setSession] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [booting, setBooting] = useState(true);
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", localStorage.getItem("kd-theme") || "light");
+  }, []);
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => { setSession(data.session); setBooting(false); });
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+  useEffect(() => {
+    if (!session) { setProfile(null); return; }
+    supabase.from("profiles").select("id, role, full_name, phone, is_active, access_overrides").eq("id", session.user.id).single().then(({ data }) => setProfile(data));
+  }, [session]);
+  if (publicToken) return <PublicJobPage token={publicToken} />;
+  if (booting) return <div className="kd-center">Загрузка…</div>;
+  if (!session) return <Login />;
+  if (profile?.is_active === false) return <div className="kd-center"><div className="kd-card" style={{ maxWidth: 460 }}><h2>Доступ отключён</h2><p className="kd-muted">Администратор временно отключил эту учётную запись.</p><button className="kd-btn ghost" onClick={() => supabase.auth.signOut()}>Выйти</button></div></div>;
+  return <Dashboard session={session} profile={profile} />;
+}
+
+export default function App() {
+  return <AppErrorBoundary><AppContent /></AppErrorBoundary>;
+}
+
+function Login() {
+  const [email, setEmail] = useState(""); const [pass, setPass] = useState("");
+  const [err, setErr] = useState(""); const [loading, setLoading] = useState(false);
+  async function submit(e) {
+    e.preventDefault(); setLoading(true); setErr("");
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password: pass });
+    if (error) setErr("Неверная почта или пароль");
+    setLoading(false);
+  }
+  return (
+    <div className="kd-login">
+      <form className="kd-login-card" onSubmit={submit}>
+        <div className="kd-hazard" />
+        <div className="kd-logo-big"><span className="kd-logo-mark"><Bug size={19} strokeWidth={2.4} /></span>KazDez</div>
+        <div className="kd-login-sub">Вход в систему</div>
+        <label className="kd-field"><span>Почта</span><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@mail.kz" autoComplete="username" /></label>
+        <label className="kd-field"><span>Пароль</span><input type="password" value={pass} onChange={(e) => setPass(e.target.value)} placeholder="••••••••" autoComplete="current-password" /></label>
+        {err && <div className="kd-err">{err}</div>}
+        <button className="kd-btn primary wide" disabled={loading || !email || !pass}>{loading ? "Входим…" : "Войти"}</button>
+      </form>
+    </div>
+  );
+}
+
+function PublicJobPage({ token }) {
+  const [job, setJob] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [rating, setRating] = useState(0);
+  const [comment, setComment] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    supabase.rpc("get_public_job", { p_token: token }).then(({ data, error: rpcError }) => {
+      if (!active) return;
+      const item = Array.isArray(data) ? data[0] : data;
+      if (rpcError) setError("Страница заявки пока недоступна. Попросите менеджера проверить ссылку.");
+      else if (!item) setError("Ссылка недействительна или доступ к заявке закрыт.");
+      else setJob(item);
+      setLoading(false);
+    });
+    return () => { active = false; };
+  }, [token]);
+
+  async function sendFeedback() {
+    if (!rating || sending) return;
+    setSending(true); setError("");
+    const { error: rpcError } = await supabase.rpc("submit_public_feedback", { p_token: token, p_rating: rating, p_comment: comment.trim() || null });
+    if (rpcError) setError("Не удалось отправить оценку. Попробуйте ещё раз.");
+    else setSent(true);
+    setSending(false);
+  }
+
+  if (loading) return <div className="kd-public"><div className="kd-public-card kd-public-state">Загрузка заявки…</div></div>;
+  if (!job) return <div className="kd-public"><div className="kd-public-card kd-public-state"><AlertTriangle size={28} /><h1>Заявка не найдена</h1><p>{error}</p></div></div>;
+  const stageKey = job.job_status === "done" ? "done" : job.job_status === "canceled" ? "canceled" : (WORK_STAGE[job.work_stage] ? job.work_stage : "new");
+  const stage = WORK_STAGE[stageKey];
+  const steps = ["confirmed", "assigned", "en_route", "on_site", "done"];
+  const stageStep = stage.step;
+  return (
+    <div className="kd-public">
+      <main className="kd-public-card">
+        <header className="kd-public-head">
+          <div className="kd-logo-big"><span className="kd-logo-mark"><Bug size={18} /></span>KazDez</div>
+          <span className="kd-public-id">Заявка #{String(job.job_id || "").slice(-6)}</span>
+        </header>
+        <section className="kd-public-hero">
+          <div>
+            <div className="kd-public-kicker">Статус работы</div>
+            <h1>{stage.label}</h1>
+            <p>{job.contact_name}, здесь всегда виден актуальный статус вашей заявки.</p>
+          </div>
+          <span className="kd-public-status" style={{ color: stage.color, background: stage.bg }}>{stage.short}</span>
+        </section>
+
+        {stageKey !== "canceled" && <div className="kd-public-progress" aria-label="Этапы выполнения">
+          {steps.map((key, index) => {
+            const item = WORK_STAGE[key]; const active = stageStep >= item.step;
+            return <div key={key} className={active ? "done" : ""}><span>{active ? <CheckCircle2 size={16} /> : index + 1}</span><small>{item.short}</small></div>;
+          })}
+        </div>}
+
+        <section className="kd-public-details">
+          <div><Calendar size={18} /><span>Дата и время</span><strong>{isoToRu(job.scheduled_date) || "Уточняется"}{job.scheduled_time ? ` · ${job.scheduled_time}` : ""}</strong></div>
+          <div><ClipboardList size={18} /><span>Услуга</span><strong>{job.service_type}{job.pest ? ` · ${job.pest}` : ""}</strong></div>
+          <div><MapPin size={18} /><span>Адрес</span><strong>{addressPlain(job.address) || "Уточняется"}</strong></div>
+          {job.technician_name && <div><Users size={18} /><span>Исполнитель</span><strong>{job.technician_name}</strong></div>}
+          {job.guarantee_months && <div><ShieldCheck size={18} /><span>Гарантия</span><strong>{job.guarantee_months} мес.</strong></div>}
+        </section>
+
+        {job.address && <a className="kd-btn primary wide kd-public-map" href={yandexMapUrl(job.address)} target="_blank" rel="noreferrer"><Navigation size={17} />Открыть маршрут в Яндекс Картах</a>}
+
+        {stageKey === "done" && <section className="kd-public-feedback">
+          <div className="kd-title">Как прошла работа?</div>
+          {sent ? <div className="kd-public-thanks"><CheckCircle2 size={22} />Спасибо! Ваша оценка отправлена.</div> : <>
+            <div className="kd-public-stars" aria-label="Оценка от 1 до 5">
+              {[1, 2, 3, 4, 5].map((value) => <button key={value} className={value <= rating ? "on" : ""} onClick={() => setRating(value)} aria-label={`${value} из 5`}><Star size={27} /></button>)}
+            </div>
+            <textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Комментарий (необязательно)" rows={3} />
+            <button className="kd-btn primary" disabled={!rating || sending} onClick={sendFeedback}>{sending ? "Отправляем…" : "Отправить оценку"}</button>
+          </>}
+        </section>}
+        {error && <div className="kd-err">{error}</div>}
+        <footer className="kd-public-footer">Эта страница содержит только информацию по вашей заявке.</footer>
+      </main>
+    </div>
+  );
+}
+
+// ----------------------------- dashboard -----------------------------
+function Dashboard({ session, profile }) {
+  const [jobs, setJobs] = useState([]);
+  const [chemicals, setChemicals] = useState([]);
+  const [techs, setTechs] = useState([]);
+  const [allProfiles, setAllProfiles] = useState([]);
+  const [authUsers, setAuthUsers] = useState([]);
+  const [handouts, setHandouts] = useState([]);
+  const [partners, setPartners] = useState([]);
+  const [docs, setDocs] = useState([]);
+  const [expenses, setExpenses] = useState([]);
+  const [equipment, setEquipment] = useState([]);
+  const [equipHandouts, setEquipHandouts] = useState([]);
+  const [sources, setSources] = useState([]);
+  const [pestTypes, setPestTypes] = useState([]);
+  const [settings, setSettings] = useState({});
+  const [expCats, setExpCats] = useState([]);
+  const [opex, setOpex] = useState([]);
+  const [deposits, setDeposits] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [accounts, setAccounts] = useState([]);
+  const [moves, setMoves] = useState([]);
+  const [tenders, setTenders] = useState([]);
+  const [tenderGuarantees, setTenderGuarantees] = useState([]);
+  const [tenderServices, setTenderServices] = useState([]);
+  const [guaranteeReturns, setGuaranteeReturns] = useState([]);
+  const [leads, setLeads] = useState([]);
+  const [leadStages, setLeadStages] = useState([]);
+  const [leadStageFilter, setLeadStageFilter] = useState("all");
+  const [partnerSearch, setPartnerSearch] = useState("");
+  const [teamRepFilter, setTeamRepFilter] = useState({ preset: "month" });
+  const [mktChannels, setMktChannels] = useState([]);
+  const [mktTopups, setMktTopups] = useState([]);
+  const [opexView, setOpexView] = useState("accounts");
+  const [scheduleDate, setScheduleDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [daysOff, setDaysOff] = useState([]);
+  const [followups, setFollowups] = useState([]);
+  const [qualityChecks, setQualityChecks] = useState([]);
+  const [contracts, setContracts] = useState([]);
+  const [clientEvents, setClientEvents] = useState([]);
+  const [publicFeedback, setPublicFeedback] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [jobProofs, setJobProofs] = useState([]);
+  const [proofMedia, setProofMedia] = useState({ before: [], after: [], signatureUrl: "" });
+  const [routeDate, setRouteDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [routeTech, setRouteTech] = useState("all");
+  const [taskFilter, setTaskFilter] = useState("open");
+  const [taskAssignee, setTaskAssignee] = useState("");
+  const [jobsDateFilter, setJobsDateFilter] = useState({ preset: "all" });
+  const [doneDateFilter, setDoneDateFilter] = useState({ preset: "all" });
+  const [canceledDateFilter, setCanceledDateFilter] = useState({ preset: "all" });
+  const [audit, setAudit] = useState([]);
+  const [trash, setTrash] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState("today");
+  const [modal, setModal] = useState(null);
+  const [confirmState, setConfirmState] = useState(null);
+  const askConfirm = (message, onYes, opts = {}) => setConfirmState({ message, onYes, danger: opts.danger !== false, confirmLabel: opts.confirmLabel });
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [sideOpen, setSideOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [globalSearch, setGlobalSearch] = useState("");
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  const [doneSortDir, setDoneSortDir] = useState("desc");
+  const [techFilter, setTechFilter] = useState("");
+  const [toast, setToast] = useState("");
+  const [pMode, setPMode] = useState("all");
+  const [brandFilter, setBrandFilter] = useState("all");
+  const [pOff, setPOff] = useState(0);
+  const [moreNavOpen, setMoreNavOpen] = useState(() => localStorage.getItem("kd-more-nav") === "1");
+  const [online, setOnline] = useState(() => navigator.onLine);
+  const [dataWarnings, setDataWarnings] = useState([]);
+  const [lastLoadedAt, setLastLoadedAt] = useState(null);
+  const [notificationOpen, setNotificationOpen] = useState(false);
+  const [installPrompt, setInstallPrompt] = useState(null);
+  const [offlineQueued, setOfflineQueued] = useState(() => { try { return JSON.parse(localStorage.getItem("kd-offline-actions-v4") || "[]").length; } catch { return 0; } });
+  const [syncingOffline, setSyncingOffline] = useState(false);
+  const isAdmin = profile?.role === "admin";
+  const permissions = effectivePermissions(profile);
+  const canAccess = (key) => isAdmin || permissions.has(key);
+  const canManageTasks = canAccess("action.tasks_manage");
+  const canEditJobs = canAccess("action.jobs_edit");
+  const isFieldTech = profile?.role === "tech";
+  const canManageCash = canAccess("action.finance_edit");
+  const canEditPartners = canAccess("action.partners_edit");
+  const canEditDocs = canAccess("action.docs_edit");
+  const canEditTenders = canAccess("action.tenders_edit");
+  const actorName = profile?.full_name || (isAdmin ? "Админ" : session.user.email);
+
+  useEffect(() => {
+    const setOn = () => { setOnline(true); syncOfflineQueue(); }; const setOff = () => setOnline(false);
+    window.addEventListener("online", setOn); window.addEventListener("offline", setOff);
+    return () => { window.removeEventListener("online", setOn); window.removeEventListener("offline", setOff); };
+  }, []);
+
+  useEffect(() => {
+    const capture = (event) => { event.preventDefault(); setInstallPrompt(event); };
+    window.addEventListener("beforeinstallprompt", capture);
+    return () => window.removeEventListener("beforeinstallprompt", capture);
+  }, []);
+
+  useEffect(() => { if (isAdmin) refreshAuthUsers(); }, [isAdmin]);
+
+  function showToast(t) { setToast(t); setTimeout(() => setToast(""), 2200); }
+
+  async function refreshAuthUsers() {
+    const { data, error } = await supabase.functions.invoke("admin-users", { body: { action: "list" } });
+    if (error) { setDataWarnings((items) => [...items.filter((x) => !x.startsWith("Пользователи:")), `Пользователи: ${error.message}`]); return; }
+    setAuthUsers(data?.users || []);
+  }
+
+  async function saveAdminUser(payload) {
+    const action = payload.id ? "update" : "create";
+    const { data, error } = await supabase.functions.invoke("admin-users", { body: { action, user: payload } });
+    if (error || data?.error) { showToast("Ошибка: " + (data?.error || error?.message || "не удалось сохранить")); return; }
+    await logAction("Доступы", `${action === "create" ? "Создан" : "Изменён"} сотрудник: ${payload.full_name} · ${ROLE_DEFINITIONS[payload.role]?.label || payload.role}`);
+    setModal(null); showToast(action === "create" ? "Сотрудник добавлен" : "Права сохранены"); await load(); await refreshAuthUsers();
+  }
+
+  async function deleteAdminUser(user) {
+    if (!user?.id || user.id === session.user.id) { showToast("Нельзя удалить свою учётную запись"); return; }
+    const { data, error } = await supabase.functions.invoke("admin-users", { body: { action: "delete", user: { id: user.id } } });
+    if (error || data?.error) { showToast("Ошибка: " + (data?.error || error?.message || "не удалось удалить")); return; }
+    await logAction("Доступы", `Удалён пользователь: ${user.full_name || user.email || user.id}`);
+    showToast("Учётная запись удалена"); await load(); await refreshAuthUsers();
+  }
+
+  async function load() {
+    setLoading(true);
+    try {
+    await supabase.rpc("stage4_refresh_notifications");
+    const responses = await Promise.all([
+      supabase.from("jobs").select("*"),
+      supabase.from("report_chemicals").select("*"),
+      supabase.from("chemicals").select("*"),
+      supabase.from("audit_log").select("*").order("ts", { ascending: false }),
+      supabase.from("trash").select("*").order("deleted_at", { ascending: false }),
+      supabase.from("profiles").select("id, full_name, phone, role, is_active, access_overrides, created_at"),
+      supabase.from("handouts").select("*"),
+      supabase.from("partners").select("*"),
+      supabase.from("doc_services").select("*").order("created_at", { ascending: false }),
+      supabase.from("tech_expenses").select("*").order("created_at", { ascending: false }),
+      supabase.from("equipment").select("*"),
+      supabase.from("equipment_handouts").select("*"),
+      supabase.from("client_sources").select("*").order("name"),
+      supabase.from("pest_types").select("*").order("name"),
+      supabase.from("app_settings").select("*"),
+      supabase.from("expense_categories").select("*").order("name"),
+      supabase.from("opex").select("*").order("spent_date", { ascending: false }),
+      supabase.from("cash_deposits").select("*").order("requested_at", { ascending: false }),
+      supabase.from("tasks").select("*").order("created_at", { ascending: false }),
+      supabase.from("accounts").select("*").order("sort"),
+      supabase.from("money_moves").select("*").order("move_date", { ascending: false }),
+      supabase.from("tenders").select("*").order("created_at", { ascending: false }),
+      supabase.from("tender_guarantees").select("*"),
+      supabase.from("tender_services").select("*").order("seq"),
+      supabase.from("guarantee_returns").select("*").order("return_date", { ascending: false }),
+      supabase.from("leads").select("*").order("updated_at", { ascending: false }),
+      supabase.from("lead_stages").select("*").order("sort"),
+      supabase.from("mkt_channels").select("*").order("sort"),
+      supabase.from("mkt_topups").select("*").order("topup_date", { ascending: false }),
+      supabase.from("tech_days_off").select("*"),
+      supabase.from("client_followups").select("*").order("due_date", { ascending: true }),
+      supabase.from("quality_checks").select("*").order("contacted_at", { ascending: false }),
+      supabase.from("service_contracts").select("*").order("next_service_date", { ascending: true }),
+      supabase.from("client_events").select("*").order("created_at", { ascending: false }),
+      supabase.from("client_public_feedback").select("*").order("created_at", { ascending: false }),
+      supabase.from("notifications").select("*").order("created_at", { ascending: false }).limit(80),
+      supabase.from("job_proofs").select("*").order("updated_at", { ascending: false }),
+    ]);
+    const [jr, cr, chr, ar, tr, pr, hr, ptr, dsr, exr, eqr, ehr, scr, ptyr, str, ecr, opr, dpr, tkr, accr, mvr, tndr, tgr, tsr, grr, ldr, lsr, mcr, mtr, dofr, fur, qcr, cor, cer, pfr, ntr, jpr] = responses;
+    const tableNames = ["Заявки", "Препараты в отчётах", "Склад", "Журнал", "Корзина", "Сотрудники", "Выдача препаратов", "Партнёры", "Документы", "Расходы сотрудников", "Оборудование", "Выдача оборудования", "Источники", "Виды работ", "Настройки", "Категории расходов", "Операционные расходы", "Сдача наличных", "Задачи", "Счета", "Движение денег", "Тендеры", "Обеспечения", "Работы по тендерам", "Возвраты", "Клиенты", "Этапы CRM", "Рекламные каналы", "Расходы рекламы", "Выходные", "Касания", "Контроль качества", "Абоненты", "Хронология клиентов", "Оценки клиентов", "Уведомления", "Подтверждения работ"];
+    setDataWarnings(responses.map((response, index) => response.error ? `${tableNames[index]}: ${response.error.message}` : null).filter(Boolean));
+    let offlineSnapshot = null; try { offlineSnapshot = JSON.parse(localStorage.getItem("kd-offline-snapshot-v4") || "null"); } catch { offlineSnapshot = null; }
+    const useOfflineSnapshot = !navigator.onLine && !!jr.error && !!offlineSnapshot?.jobs;
+    const chems = cr.data || [];
+    const mappedJobs = (jr.data || []).map((j) => ({ ...j, chemicals: chems.filter((c) => c.job_id === j.id) }));
+    const currentJobs = useOfflineSnapshot ? offlineSnapshot.jobs : mappedJobs;
+    const currentChemicals = useOfflineSnapshot ? (offlineSnapshot.chemicals || []) : (chr.data || []);
+    const currentProfiles = useOfflineSnapshot ? (offlineSnapshot.profiles || []) : (pr.data || []);
+    setJobs(currentJobs);
+    setChemicals(currentChemicals);
+    setAudit(ar.data || []);
+    setTrash(tr.data || []);
+    setTechs(currentProfiles.filter((p) => p.role === "tech"));
+    setAllProfiles(currentProfiles);
+    setHandouts(hr.data || []);
+    setPartners(ptr.data || []);
+    setDocs(dsr.data || []);
+    setExpenses(exr.data || []);
+    setEquipment(eqr.data || []);
+    setEquipHandouts(ehr.data || []);
+    setSources(scr.data || []);
+    setPestTypes(ptyr.data || []);
+    const settingsMap = useOfflineSnapshot ? (offlineSnapshot.settings || {}) : {};
+    if (!useOfflineSnapshot) (str.data || []).forEach((row) => { settingsMap[row.key] = row.value; });
+    setSettings(settingsMap);
+    setExpCats(ecr.data || []);
+    setOpex(opr.data || []);
+    setDeposits(dpr.data || []);
+    setTasks(tkr.data || []);
+    setAccounts(accr.data || []);
+    setMoves(mvr.data || []);
+    setTenders(tndr.data || []);
+    setTenderGuarantees(tgr.data || []);
+    setTenderServices(tsr.data || []);
+    setGuaranteeReturns(grr.data || []);
+    setLeads(ldr.data || []);
+    setLeadStages(lsr.data || []);
+    setMktChannels(mcr.data || []);
+    setMktTopups(mtr.data || []);
+    setDaysOff(dofr.data || []);
+    setFollowups(fur.data || []);
+    setQualityChecks(qcr.data || []);
+    setContracts(cor.data || []);
+    setClientEvents(cer.data || []);
+    setPublicFeedback(pfr.data || []);
+    setNotifications(ntr.data || []);
+    setJobProofs(jpr.data || []);
+    if (!useOfflineSnapshot && !jr.error) {
+      try {
+        const cacheJobs = mappedJobs.filter((job) => isAdmin || job.assigned_to === session.user.id || job.status !== "done").slice(0, 400);
+        localStorage.setItem("kd-offline-snapshot-v4", JSON.stringify({ jobs: cacheJobs, chemicals: chr.data || [], profiles: pr.data || [], settings: settingsMap, savedAt: new Date().toISOString() }));
+      } catch { /* локальное хранилище может быть заполнено — онлайн-работе это не мешает */ }
+    }
+    if (useOfflineSnapshot) setDataWarnings([`Офлайн-режим: показаны данные на ${fmtTs(offlineSnapshot.savedAt)}`]);
+    setLastLoadedAt(useOfflineSnapshot && offlineSnapshot.savedAt ? new Date(offlineSnapshot.savedAt) : new Date());
+    setLoading(false);
+    } catch (error) {
+      let snapshot = null; try { snapshot = JSON.parse(localStorage.getItem("kd-offline-snapshot-v4") || "null"); } catch { snapshot = null; }
+      if (snapshot?.jobs) {
+        setJobs(snapshot.jobs); setChemicals(snapshot.chemicals || []); setAllProfiles(snapshot.profiles || []); setTechs((snapshot.profiles || []).filter((p) => p.role === "tech")); setSettings(snapshot.settings || {}); setLastLoadedAt(snapshot.savedAt ? new Date(snapshot.savedAt) : null);
+        setDataWarnings([`Нет связи с базой. Показана сохранённая копия на ${fmtTs(snapshot.savedAt)}`]);
+      } else setDataWarnings([`Не удалось связаться с базой: ${error?.message || "неизвестная ошибка"}`]);
+      setLoading(false);
+    }
+  }
+  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const timer = setInterval(() => { if (navigator.onLine) refreshNotificationCenter(); }, 5 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, [session.user.id]);
+
+  async function logAction(action, summary) {
+    await supabase.from("audit_log").insert({ actor: actorName, actor_id: session.user.id, action, summary });
+  }
+  const OFFLINE_QUEUE_KEY = "kd-offline-actions-v4";
+  function readOfflineQueue() { try { return JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]"); } catch { return []; } }
+  function writeOfflineQueue(items) { localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(items)); setOfflineQueued(items.length); }
+  function queueOfflineAction(action) { const items = readOfflineQueue(); items.push({ ...action, queuedAt: new Date().toISOString() }); writeOfflineQueue(items); }
+  async function syncOfflineQueue() {
+    if (!navigator.onLine || syncingOffline) return;
+    const items = readOfflineQueue(); if (!items.length) return;
+    setSyncingOffline(true); const failed = [];
+    for (const item of items) {
+      if (item.kind === "stage") {
+        const { error } = await supabase.from("jobs").update(item.payload).eq("id", item.jobId);
+        if (error) failed.push(item);
+      } else failed.push(item);
+    }
+    writeOfflineQueue(failed); setSyncingOffline(false);
+    if (!failed.length) { showToast("Офлайн-изменения синхронизированы"); load(); }
+  }
+  async function installApplication() {
+    if (!installPrompt) return;
+    await installPrompt.prompt(); await installPrompt.userChoice; setInstallPrompt(null);
+  }
+  const unreadNotifications = notifications.filter((item) => !item.read_at);
+  async function refreshNotificationCenter() {
+    await supabase.rpc("stage4_refresh_notifications");
+    const { data } = await supabase.from("notifications").select("*").order("created_at", { ascending: false }).limit(80);
+    if (data) setNotifications(data);
+  }
+  async function markNotificationRead(item) {
+    if (!item.read_at) {
+      const now = new Date().toISOString(); setNotifications((rows) => rows.map((row) => row.id === item.id ? { ...row, read_at: now } : row));
+      await supabase.from("notifications").update({ read_at: now }).eq("id", item.id);
+    }
+  }
+  async function markAllNotificationsRead() {
+    const now = new Date().toISOString(); setNotifications((rows) => rows.map((row) => ({ ...row, read_at: row.read_at || now })));
+    await supabase.from("notifications").update({ read_at: now }).is("read_at", null);
+  }
+  function clientReminderWhatsappUrl(job) {
+    const phone = String(job?.client_phone || "").replace(/\D/g, ""); if (!phone) return "";
+    const message = `Сәлеметсіз бе! KazDez компаниясынан еске саламыз: дезинфекция ${isoToRu(job.scheduled_date)} күні${job.scheduled_time ? `, сағат ${job.scheduled_time}` : ""} жоспарланған.\n\nЗдравствуйте! Напоминаем: дезинфекция запланирована на ${isoToRu(job.scheduled_date)}${job.scheduled_time ? `, время ${job.scheduled_time}` : ""}.`;
+    return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
+  }
+  async function openNotification(item) {
+    await markNotificationRead(item); setNotificationOpen(false);
+    const job = item.job_id ? jobs.find((row) => String(row.id) === String(item.job_id)) : null;
+    if (item.kind === "client_reminder" && job) { window.open(clientReminderWhatsappUrl(job), "_blank", "noopener,noreferrer"); return; }
+    if (item.link_tab) setTab(item.link_tab);
+    if (job && ["assignment", "visit_reminder"].includes(item.kind)) setModal(job.status === "done" ? { kind: "view", job } : canEditJobs ? { kind: "edit", job } : { kind: "details", job });
+    if (job && item.kind === "unassigned") setModal({ kind: "assign", job });
+  }
+  const proofByJob = (jobId) => jobProofs.find((proof) => String(proof.job_id) === String(jobId));
+  const proofIsComplete = (jobId) => { const proof = proofByJob(jobId); return !!(proof?.before_paths?.length && proof?.after_paths?.length && proof?.signature_path); };
+  async function openJobProof(job) {
+    const proof = proofByJob(job.id); setProofMedia({ before: [], after: [], signatureUrl: "" }); setModal({ kind: "proof", job });
+    if (!proof) return;
+    const paths = [...(proof.before_paths || []), ...(proof.after_paths || []), ...(proof.signature_path ? [proof.signature_path] : [])];
+    if (!paths.length) return;
+    const { data } = await supabase.storage.from("job-proofs").createSignedUrls(paths, 3600);
+    const byPath = new Map((data || []).filter((item) => item.signedUrl).map((item) => [item.path, item.signedUrl]));
+    setProofMedia({
+      before: (proof.before_paths || []).filter((path) => byPath.has(path)).map((path) => ({ path, url: byPath.get(path) })),
+      after: (proof.after_paths || []).filter((path) => byPath.has(path)).map((path) => ({ path, url: byPath.get(path) })),
+      signatureUrl: proof.signature_path ? byPath.get(proof.signature_path) || "" : "",
+    });
+  }
+  async function uploadProofBlob(job, blob, kind, index, extension = "jpg") {
+    const safeExt = ["jpg", "jpeg", "png", "webp"].includes(extension) ? extension : "jpg";
+    const path = `${job.id}/${kind}-${Date.now()}-${index}.${safeExt}`;
+    const { error } = await supabase.storage.from("job-proofs").upload(path, blob, { cacheControl: "3600", upsert: false, contentType: blob.type || `image/${safeExt}` });
+    if (error) throw error; return path;
+  }
+  async function saveJobProof(job, payload) {
+    if (!navigator.onLine) { showToast("Для загрузки фото нужен интернет. Данные формы не закрыты."); return false; }
+    const existing = proofByJob(job.id);
+    try {
+      const beforeNew = await Promise.all(payload.beforeFiles.map((file, index) => uploadProofBlob(job, file, "before", index, (file.name.split(".").pop() || "jpg").toLowerCase())));
+      const afterNew = await Promise.all(payload.afterFiles.map((file, index) => uploadProofBlob(job, file, "after", index, (file.name.split(".").pop() || "jpg").toLowerCase())));
+      let signaturePath = existing?.signature_path || null;
+      if (payload.signatureDataUrl) { const blob = await fetch(payload.signatureDataUrl).then((response) => response.blob()); signaturePath = await uploadProofBlob(job, blob, "signature", 0, "png"); }
+      const now = new Date().toISOString();
+      const row = {
+        job_id: String(job.id), before_paths: [...(existing?.before_paths || []), ...beforeNew], after_paths: [...(existing?.after_paths || []), ...afterNew],
+        signature_path: signaturePath, signed_name: payload.signedName || existing?.signed_name || null,
+        arrival_lat: payload.arrival?.lat ?? existing?.arrival_lat ?? null, arrival_lng: payload.arrival?.lng ?? existing?.arrival_lng ?? null, arrival_accuracy: payload.arrival?.accuracy ?? existing?.arrival_accuracy ?? null, arrived_at: payload.arrival && (existing?.arrival_lat == null || Number(existing.arrival_lat) !== Number(payload.arrival.lat) || Number(existing.arrival_lng) !== Number(payload.arrival.lng)) ? now : existing?.arrived_at || null,
+        completion_lat: payload.completion?.lat ?? existing?.completion_lat ?? null, completion_lng: payload.completion?.lng ?? existing?.completion_lng ?? null, completion_accuracy: payload.completion?.accuracy ?? existing?.completion_accuracy ?? null, completed_at: payload.completion && (existing?.completion_lat == null || Number(existing.completion_lat) !== Number(payload.completion.lat) || Number(existing.completion_lng) !== Number(payload.completion.lng)) ? now : existing?.completed_at || null,
+        created_by: existing?.created_by || session.user.id, updated_at: now,
+      };
+      const { data, error } = await supabase.from("job_proofs").upsert(row, { onConflict: "job_id" }).select("*").single();
+      if (error) throw error;
+      setJobProofs((rows) => [data, ...rows.filter((item) => item.id !== data.id)]);
+      await recordClientEvent(job, "proof", "Подтверждение работы обновлено", [row.before_paths.length && `до: ${row.before_paths.length}`, row.after_paths.length && `после: ${row.after_paths.length}`, signaturePath && "подпись клиента"].filter(Boolean).join(" · "));
+      showToast("Подтверждение работы сохранено"); return true;
+    } catch (error) { showToast("Не удалось сохранить подтверждение: " + (error?.message || "ошибка загрузки")); return false; }
+  }
+  async function recordClientEvent(job, eventType, title, details = "") {
+    if (!job?.client_phone || !title) return;
+    const { data, error } = await supabase.from("client_events").insert({
+      client_phone: job.client_phone,
+      job_id: job.id ? String(job.id) : null,
+      event_type: eventType || "note",
+      title,
+      details: details || null,
+      created_by: session.user.id,
+    }).select("*").single();
+    if (!error && data) setClientEvents((items) => [data, ...items]);
+  }
+  async function addClientNote(job, note) {
+    const text = String(note || "").trim();
+    if (!text) return false;
+    const { data, error } = await supabase.from("client_events").insert({
+      client_phone: job.client_phone,
+      job_id: String(job.id),
+      event_type: "note",
+      title: "Внутренняя заметка",
+      details: text,
+      created_by: session.user.id,
+    }).select("*").single();
+    if (error) { showToast("Не удалось сохранить заметку: " + error.message); return false; }
+    setClientEvents((items) => [data, ...items]); showToast("Заметка добавлена"); return true;
+  }
+  function publicJobUrl(job) {
+    if (!job?.public_token) return "";
+    const url = new URL(window.location.href);
+    url.search = ""; url.hash = ""; url.searchParams.set("track", job.public_token);
+    return url.toString();
+  }
+  function copyPublicJobLink(job) {
+    const url = publicJobUrl(job);
+    if (!url) { showToast("Сначала выполни SQL этапа 3 в Supabase"); return; }
+    copyText(url, () => showToast("Ссылка для клиента скопирована"));
+  }
+  async function setJobWorkStage(job, stageKey) {
+    if (!WORK_STAGE[stageKey]) return;
+    const now = new Date().toISOString();
+    const payload = { work_stage: stageKey, stage_updated_at: now };
+    if (stageKey === "en_route") payload.en_route_at = now;
+    if (stageKey === "on_site") payload.arrived_at = now;
+    if (!navigator.onLine) {
+      queueOfflineAction({ kind: "stage", jobId: job.id, payload });
+      setJobs((rows) => rows.map((row) => row.id === job.id ? { ...row, ...payload } : row));
+      showToast(`Сохранено офлайн: ${WORK_STAGE[stageKey].short}`); return;
+    }
+    const { error } = await supabase.from("jobs").update(payload).eq("id", job.id);
+    if (error) { showToast("Не удалось изменить этап: " + error.message); return; }
+    await recordClientEvent(job, "stage", WORK_STAGE[stageKey].label, actorName);
+    showToast(`Статус: ${WORK_STAGE[stageKey].short}`); load();
+  }
+  const chemById = (id) => chemicals.find((x) => x.id === id);
+  const lineChem = (l) => (l.chemical_id ? chemById(l.chemical_id) : chemicals.find((x) => norm(x.name) === norm(l.name)));
+  const jobChemCost = (job) => (job.chemicals || []).reduce((s, l) => { const c = lineChem(l); return s + lineAmount(l) * pricePerBase(c); }, 0);
+  const qrFeeRate = (Number(settings.qr_fee_rate) || 0.95) / 100;
+  const defaultGuarantee = Number(settings.default_guarantee_months) || 6;
+  function techLedger(techId) {
+    const m = {};
+    const get = (cid) => (m[cid] = m[cid] || { issued: 0, opening: 0, consumed: 0 });
+    handouts.filter((h) => h.tech_id === techId).forEach((h) => { const g = get(h.chemical_id); if (h.kind === "opening") g.opening += Number(h.amount) || 0; else g.issued += Number(h.amount) || 0; });
+    jobs.filter((j) => j.assigned_to === techId).forEach((j) => (j.chemicals || []).forEach((l) => { if (l.chemical_id) get(l.chemical_id).consumed += lineAmount(l); }));
+    return Object.entries(m).map(([cid, v]) => { const c = chemById(cid); const received = v.issued + v.opening; return c ? { chem: c, ...v, received, balance: received - v.consumed } : null; }).filter(Boolean);
+  }
+
+  const techById = (id) => techs.find((t) => t.id === id);
+  const pestGuideObj = (() => { try { return JSON.parse(settings.pest_guide || "{}"); } catch { return {}; } })();
+  // сделать гарантийный сертификат по заявке (реальные данные)
+  function certifyJob(job) {
+    const yr = new Date().getFullYear();
+    const num = `ГС-${yr}-${(String(job.id).replace(/\D/g, "").slice(-6) || "000001")}`;
+    generateCertificate({
+      address: addressPlain(job.address),
+      type: job.type,
+      pest: job.pest,
+      area: job.area,
+      scheduled_date: job.scheduled_date,
+      scheduled_time: job.scheduled_time,
+      guarantee_months: job.guarantee_months,
+      tech: techById(job.assigned_to)?.full_name,
+      client_phone: job.client_phone,
+      contact_name: job.contact_name,
+      doc_number: num,
+    }, settings);
+  }
+  // сделать акт о проведении дезработ (для первичной обработки — гарантия после второй)
+  function certifyAct(job) {
+    const yr = new Date().getFullYear();
+    const num = `АКТ-${yr}-${(String(job.id).replace(/\D/g, "").slice(-6) || "000001")}`;
+    const chems = (job.chemicals || []).map((l) => {
+      const c = lineChem(l);
+      return `${l.name || (c && c.name) || "препарат"} — ${fmtAmount(lineAmount(l), c && c.unit_kind)}`;
+    });
+    generateAct({
+      address: addressPlain(job.address),
+      type: job.type,
+      pest: job.pest,
+      area: job.area,
+      scheduled_date: job.scheduled_date,
+      scheduled_time: job.scheduled_time,
+      tech: techById(job.assigned_to)?.full_name,
+      client_phone: job.client_phone,
+      contact_name: job.contact_name,
+      chemicals: chems,
+      doc_number: num,
+    }, settings);
+  }
+  const techExtrasTotal = (techId) => jobs.filter((j) => j.assigned_to === techId).reduce((s, j) => s + (Number(j.tech_bonus) || 0) + (Number(j.tech_travel) || 0), 0);
+  const techBonusTotal = (techId) => jobs.filter((j) => j.assigned_to === techId).reduce((s, j) => s + (Number(j.tech_bonus) || 0), 0);
+  const techTravelTotal = (techId) => jobs.filter((j) => j.assigned_to === techId).reduce((s, j) => s + (Number(j.tech_travel) || 0), 0);
+  const profileById = (id) => allProfiles.find((p) => p.id === id);
+  const personName = (id) => profileById(id)?.full_name || "—";
+  const assignableProfiles = allProfiles;
+  const equipById = (id) => equipment.find((e) => e.id === id);
+  const techEquipment = (techId) => equipHandouts.filter((h) => h.tech_id === techId && h.status === "with_tech").map((h) => ({ handout: h, equip: equipById(h.equipment_id) })).filter((r) => r.equip);
+  // Наличные, собранные дезинфектором со всех его выполненных заявок
+  // П.8: собранное считается только С даты начального остатка (заявки задним числом до неё не влияют на «на руках»)
+  const techOpening = (techId) => { const p = profileById(techId); return { bal: Number(p?.cash_opening_balance) || 0, date: p?.cash_opening_date || null }; };
+  const techCashCollected = (techId) => { const op = techOpening(techId); return jobs.filter((j) => j.assigned_to === techId && j.status === "done" && (!op.date || (j.scheduled_date && j.scheduled_date >= op.date))).reduce((s, j) => s + (Number(j.report_cash) || 0), 0); };
+  // Сумма уже подтверждённых внесений (деньги, которые точно дошли)
+  const techDepositedConfirmed = (techId) => { const op = techOpening(techId); return deposits.filter((d) => d.tech_id === techId && d.status === "confirmed" && (!op.date || (d.requested_at || "").slice(0, 10) >= op.date)).reduce((s, d) => s + (Number(d.amount) || 0), 0); };
+  // Сумма ожидающих подтверждения внесений (деньги «в пути», ещё не подтверждены)
+  const techDepositedPending = (techId) => { const op = techOpening(techId); return deposits.filter((d) => d.tech_id === techId && d.status === "pending" && (!op.date || (d.requested_at || "").slice(0, 10) >= op.date)).reduce((s, d) => s + (Number(d.amount) || 0), 0); };
+  // Наличные, реально лежащие на руках прямо сейчас = собрано − подтверждено − в ожидании
+  const techCashOnHand = (techId) => techOpening(techId).bal + techCashCollected(techId) - techDepositedConfirmed(techId) - techDepositedPending(techId);
+
+  async function ensureCatalog(table, list, value) {
+    const v = (value || "").trim();
+    if (!v) return;
+    if (list.some((x) => norm(x.name) === norm(v))) return;
+    await supabase.from(table).insert({ name: v });
+  }
+  async function createJob(payload) {
+    const { data: created, error } = await supabase.from("jobs").insert({ ...payload, created_by: session.user.id, work_stage: payload.assigned_to ? "assigned" : "new" }).select("id, client_phone").single();
+    if (error) { showToast("Ошибка: " + error.message); return false; }
+    await ensureCatalog("client_sources", sources, payload.source);
+    await ensureCatalog("pest_types", pestTypes, payload.pest);
+    await logAction("Создание", `${payload.pest} · ${payload.address}`);
+    await recordClientEvent({ ...payload, id: created?.id, client_phone: created?.client_phone || payload.client_phone }, "created", "Заявка создана", `${payload.pest || "Услуга"} · ${isoToRu(payload.scheduled_date) || "дата уточняется"}`);
+    setModal(null); showToast("Заявка создана"); load();
+    return true;
+  }
+  async function editJob(job, payload) {
+    const { error } = await supabase.from("jobs").update(payload).eq("id", job.id);
+    if (error) { showToast("Ошибка: " + error.message); return false; }
+    await ensureCatalog("client_sources", sources, payload.source);
+    await ensureCatalog("pest_types", pestTypes, payload.pest);
+    await logAction("Редактирование", `${payload.pest || job.pest} · ${payload.address || job.address}`);
+    await recordClientEvent({ ...job, ...payload }, "updated", "Данные заявки обновлены", actorName);
+    setModal(null); showToast("Заявка обновлена"); load();
+    return true;
+  }
+  async function putOnRepeat(job) {
+    const { error } = await supabase.from("jobs").update({ repeat_state: "on_repeat", repeat_since: new Date().toISOString() }).eq("id", job.id);
+    if (error) { showToast("Ошибка: " + error.message); return false; }
+    await logAction("Повтор", `На повтор · ${job.pest} · ${job.address}`);
+    showToast("Заявка на повторе"); load();
+  }
+  async function cancelJob(job, reason) {
+    const { error } = await supabase.from("jobs").update({ status: "canceled", work_stage: "canceled", cancel_reason: reason || null, canceled_at: new Date().toISOString(), canceled_by: session.user.id }).eq("id", job.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Отмена заявки", `${job.pest} · ${job.address}${reason ? " — " + reason : ""}`);
+    await recordClientEvent(job, "canceled", "Заявка отменена", reason || actorName);
+    setModal(null); showToast("Заявка отменена"); load();
+  }
+  async function restoreCanceled(job) {
+    const { error } = await supabase.from("jobs").update({ status: job.assigned_to ? "assigned" : "new", work_stage: job.assigned_to ? "assigned" : "new", cancel_reason: null, canceled_at: null, canceled_by: null }).eq("id", job.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Отмена заявки", `Восстановлена · ${job.pest} · ${job.address}`);
+    await recordClientEvent(job, "restored", "Заявка возвращена в работу", actorName);
+    showToast("Заявка возвращена в работу"); load();
+  }
+  async function saveRepeatNote(job, note) {
+    const { error } = await supabase.from("jobs").update({ repeat_note: note }).eq("id", job.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    showToast("Заметка сохранена"); load();
+  }
+  async function finishRepeat(job) {
+    const { error } = await supabase.from("jobs").update({ repeat_state: "finished" }).eq("id", job.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Повтор", `Завершена (отказ от повтора) · ${job.pest} · ${job.address}`);
+    showToast("Заявка завершена"); load();
+  }
+  async function unsetRepeat(job) {
+    const { error } = await supabase.from("jobs").update({ repeat_state: null, repeat_since: null }).eq("id", job.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Повтор", `Убрана с повтора · ${job.pest} · ${job.address}`);
+    showToast("Заявка возвращена в «Выполненные»"); load();
+  }
+  async function createRepeatJob(job) {
+    const ins = await supabase.from("jobs").insert({
+      type: "Вторичная", scheduled_date: null, scheduled_time: "", address: job.address, floor: job.floor,
+      area: job.area, source: job.source, pest: job.pest, price_options: job.price_options,
+      client_phone: job.client_phone, guarantee_months: job.guarantee_months, status: "new", repeat_of: job.id, created_by: session.user.id,
+    });
+    if (ins.error) { showToast("Ошибка: " + ins.error.message); return; }
+    await supabase.from("jobs").update({ repeat_state: "finished" }).eq("id", job.id);
+    await logAction("Повтор", `Создана повторная заявка · ${job.pest} · ${job.address}`);
+    showToast("Повторная заявка создана"); load();
+  }
+  async function assignJob(job, techId) {
+    const newStatus = job.status === "done" ? "done" : (techId ? "assigned" : "new");
+    const nextStage = job.status === "done" ? "done" : (techId ? "assigned" : "new");
+    const { error } = await supabase.from("jobs").update({ assigned_to: techId || null, status: newStatus, work_stage: nextStage, stage_updated_at: new Date().toISOString() }).eq("id", job.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    const from = job.assigned_to ? (techById(job.assigned_to)?.full_name || "—") : "—";
+    const to = techId ? (techById(techId)?.full_name || "—") : "не назначен";
+    await logAction("Назначение", `${job.pest} · ${from} → ${to}`);
+    await recordClientEvent(job, "assignment", techId ? "Назначен исполнитель" : "Исполнитель снят", techId ? to : actorName);
+    setModal(null); showToast("Дезинфектор назначен"); load();
+  }
+  async function submitReport(job, report, chems, docs) {
+    const { error } = await supabase.rpc("submit_report", {
+      p_job: job.id, p_cash: report.cash, p_qr: report.qr, p_note: report.note,
+      p_chems: chems,
+      p_fu_wanted: report.followUp.wanted, p_fu_date: report.followUp.date, p_fu_note: report.followUp.note,
+      p_docs_needed: docs.needed, p_docs_avr: docs.avr, p_docs_dogovor: docs.dogovor, p_docs_note: docs.note,
+    });
+    if (error) { showToast("Ошибка: " + error.message); return false; }
+    // перечисление + пересчёт report_paid — через защищённую функцию (RLS блокировал прямой update)
+    const upd = await supabase.rpc("save_report_extras", {
+      p_job: job.id, p_cash: Number(report.cash) || 0, p_qr: Number(report.qr) || 0,
+      p_transfer: Number(report.transfer) || 0, p_method: report.method,
+    });
+    if (upd.error) { showToast("Отчёт сохранён, но детали оплаты не записались: " + upd.error.message + ". Проверь, выполнен ли kazdez-report-rpc.sql."); load(); return false; }
+    await recordClientEvent(job, "done", "Работа выполнена", `Оплата: ${fmt((Number(report.cash) || 0) + (Number(report.qr) || 0) + (Number(report.transfer) || 0))} ₸`);
+    setModal({ kind: "reportSuccess" }); load(); return true;
+  }
+  async function markTransferPaid(job, accountId, paidDate) {
+    const { error } = await supabase.from("jobs").update({ transfer_paid: true, transfer_account_id: accountId || null, transfer_paid_date: paidDate || new Date().toISOString().slice(0, 10) }).eq("id", job.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    if (accountId) {
+      const exists = moves.some((m) => m.source === "job_transfer" && m.ref_id === job.id);
+      if (!exists) {
+        await supabase.from("money_moves").insert({
+          account_id: accountId, direction: "income", amount: Number(job.report_transfer) || 0, move_date: paidDate || new Date().toISOString().slice(0, 10),
+          note: `Оплата перечислением: ${job.pest} · ${job.address}`, source: "job_transfer", ref_id: job.id, created_by: session.user.id,
+        });
+      }
+    }
+    await logAction("Оплата", `Перечисление оплачено ${fmt(job.report_transfer)} ₸${accountId ? " → " + (accountById(accountId)?.name || "") : ""}`);
+    setModal(null); showToast("Оплата зачтена"); load();
+  }
+  async function saveTechExtras(job, bonus, travel) {
+    const { error } = await supabase.from("jobs").update({ tech_bonus: Number(bonus) || null, tech_travel: Number(travel) || null }).eq("id", job.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Заявка", `Бонус/дорожные: ${job.pest} · бонус ${fmt(bonus)} · дорожные ${fmt(travel)}`);
+    setModal(null); showToast("Сохранено"); load();
+  }
+  // П.3: мы отдали заявку партнёру; он выполнил — админ фиксирует сумму и как прошла оплата
+  async function markExecutorDone(job, fullAmount, settlement, accountId, payDate) {
+    const amount = Number(fullAmount) || 0;
+    const sharePct = Number(job.executor_share_pct) || 0;
+    const ourPart = Math.round(amount * (100 - sharePct) / 100);
+    const patch = {
+      status: "done", reported_at: new Date().toISOString(),
+      executor_settlement: settlement,
+      report_method: settlement === "qr_full" ? "QR (за партнёра)" : "Перевод нашей доли",
+      // qr_full: клиент оплатил нам ВСЮ сумму по QR → report_qr = вся сумма (авто-зачисление на Kaspi Pay), должны партнёру его долю
+      // net_to_us: партнёр перевёл нам НАШУ долю → выручка = наша доля, долей не должны
+      report_paid: settlement === "qr_full" ? amount : ourPart,
+      report_qr: settlement === "qr_full" ? amount : 0,
+      report_cash: 0,
+      executor_paid: settlement === "qr_full" ? false : true,
+    };
+    const { error } = await supabase.from("jobs").update(patch).eq("id", job.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    if (settlement === "net_to_us" && accountId) {
+      const exists = moves.some((m) => m.source === "executor_net" && m.ref_id === job.id);
+      if (!exists) {
+        await supabase.from("money_moves").insert({
+          account_id: accountId, direction: "income", amount: ourPart, move_date: payDate || new Date().toISOString().slice(0, 10),
+          note: `Наша доля от партнёра-исполнителя: ${job.pest} · ${job.address}`, source: "executor_net", ref_id: job.id, created_by: session.user.id,
+        });
+      }
+    }
+    await logAction("Заявка", `Партнёр выполнил: ${job.pest} · ${fmt(amount)} ₸ · ${settlement === "qr_full" ? "QR нам, должны долю" : "получили нашу долю"}`);
+    setModal(null); showToast("Заявка закрыта"); load();
+  }
+  async function toggleExecutorPaid(job, paid) {
+    const { error } = await supabase.from("jobs").update({ executor_paid: paid }).eq("id", job.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Заявка", `Доля исполнителю ${paid ? "выплачена" : "помечена невыплаченной"}: ${job.pest}`);
+    load();
+  }
+  async function requestReportEdit(job, reason) {
+    const { error } = await supabase.rpc("request_report_edit", { p_job: job.id, p_reason: reason || null });
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Отчёт", `Запрос на изменение: ${job.pest} · ${job.address}${reason ? " — " + reason : ""}`);
+    setModal(null); showToast("Запрос отправлен админу"); load();
+  }
+  async function approveReportEdit(job) {
+    const { error } = await supabase.from("jobs").update({ edit_request_status: "approved" }).eq("id", job.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Отчёт", `Разрешено изменение: ${job.pest} · ${job.address}`);
+    showToast("Изменение разрешено — дезинфектор может переоткрыть отчёт"); load();
+  }
+  async function rejectReportEdit(job) {
+    const { error } = await supabase.from("jobs").update({ edit_request_status: null, edit_request_reason: null, edit_request_at: null }).eq("id", job.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Отчёт", `Отклонён запрос на изменение: ${job.pest} · ${job.address}`);
+    showToast("Запрос отклонён"); load();
+  }
+  async function deleteJob(job) {
+    await supabase.from("trash").insert({ deleted_by: actorName, deleted_by_id: session.user.id, job: { ...job } });
+    const { error } = await supabase.from("jobs").delete().eq("id", job.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Удаление", `${job.pest} · ${job.address}`);
+    showToast("Заявка в корзине"); load();
+  }
+  async function restore(row) {
+    const j = row.job; const chems = j.chemicals || []; const { chemicals: _c, ...jobRow } = j;
+    const { error } = await supabase.from("jobs").insert(jobRow);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    if (chems.length) await supabase.from("report_chemicals").insert(chems.map((c) => ({ job_id: j.id, chemical_id: c.chemical_id || null, name: c.name, amount: c.amount ?? c.ml, ml: c.ml ?? c.amount })));
+    await supabase.from("trash").delete().eq("id", row.id);
+    await logAction("Восстановление", `${j.pest} · ${j.address}`);
+    showToast("Заявка восстановлена"); load();
+  }
+  async function purge(row) {
+    await supabase.from("trash").delete().eq("id", row.id);
+    await logAction("Удалено навсегда", `${row.job.pest} · ${row.job.address}`);
+    showToast("Удалено навсегда"); load();
+  }
+  async function addChem(c) {
+    const { error } = await supabase.from("chemicals").insert(c);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Склад", `Новый препарат: ${c.name} (${fmtAmount(c.purchased_ml, c.unit_kind)})`);
+    setModal(null); showToast("Препарат добавлен"); load();
+  }
+  async function stockIn(chem, addMl, newPrice) {
+    const patch = { purchased_ml: (Number(chem.purchased_ml) || 0) + addMl };
+    if (newPrice != null) patch.price_per_liter = newPrice;
+    const { error } = await supabase.from("chemicals").update(patch).eq("id", chem.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Склад", `Приход: ${chem.name} +${fmtAmount(addMl, chem.unit_kind)}`);
+    setModal(null); showToast("Приход оформлен"); load();
+  }
+  async function removeChem(chem) {
+    await supabase.from("chemicals").delete().eq("id", chem.id);
+    await logAction("Склад", `Удалён препарат: ${chem.name}`);
+    showToast("Препарат удалён"); load();
+  }
+  async function addHandout(payload) {
+    const { error } = await supabase.from("handouts").insert({ ...payload, created_by: session.user.id });
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    const t = techById(payload.tech_id); const c = chemById(payload.chemical_id);
+    const kindLabel = payload.kind === "opening" ? "стартовый остаток" : "выдача";
+    await logAction("Выдача", `${t?.full_name || "?"} · ${c?.name || "?"} +${fmtAmount(payload.amount, c?.unit_kind)} (${kindLabel})`);
+    setModal(null); showToast("Записано"); load();
+  }
+  const partnerById = (id) => partners.find((p) => p.id === id);
+  function partnerNameOf(job) {
+    if (!job || (job.brand !== "partner" && !job.partner_id && !job.partner_name)) return "";
+    return job.partner_name || partnerById(job.partner_id)?.name || "Партнёр не указан";
+  }
+  function brandHeaderOf(job) {
+    if (job.brand === "Sanitex") return "Sanitex";
+    if (job.brand === "partner" || job.partner_id || job.partner_name) return `Партнёр · ${partnerNameOf(job)}`;
+    return "KazDez";
+  }
+  const partnerShareAmt = (job) => {
+    if (!job.partner_id || job.status !== "done") return 0;
+    const paid = Number(job.report_paid) || 0;
+    if (!job.joint_work) return Math.round(paid * (Number(job.partner_share) || 0) / 100);
+    const cost = jobChemCost(job);
+    const net = paid - cost;
+    const profitShare = net * (Number(job.partner_share) || 0) / 100;
+    const costOwed = job.joint_supplier === "us" ? cost * (Number(job.joint_cost_share) || 0) / 100 : 0;
+    return Math.round(profitShare - costOwed);
+  };
+  const executorShareAmt = (job) => job.executor_partner_id && job.executor_settlement === "qr_full"
+    ? Math.round((Number(job.report_paid) || 0) * (Number(job.executor_share_pct) || 0) / 100) : 0;
+  function jobEconomics(job) {
+    const revenue = Number(job.report_paid) || 0;
+    const chemicalsCost = Math.round(jobChemCost(job));
+    const qrFee = Math.round((Number(job.report_qr) || 0) * qrFeeRate);
+    const partnersCost = Math.max(0, partnerShareAmt(job)) + executorShareAmt(job);
+    const techExtras = (Number(job.tech_bonus) || 0) + (Number(job.tech_travel) || 0);
+    const transport = Number(job.transport_cost) || 0;
+    const other = Number(job.other_cost) || 0;
+    const profit = Math.round(revenue - chemicalsCost - qrFee - partnersCost - techExtras - transport - other);
+    return { revenue, chemicals: chemicalsCost, qrFee, partners: partnersCost, techExtras, transport, other, profit, margin: revenue > 0 ? Math.round(profit / revenue * 100) : 0 };
+  }
+  function upsellFor(job) {
+    const text = norm(`${job.pest || ""} ${job.address || ""} ${job.note || ""}`);
+    if (/склад|цех|производ|общепит|кафе|ресторан/.test(text)) return "регулярное абонентское обслуживание и мониторинг объекта";
+    if (/клещ|комар|участ|территор|мурав/.test(text)) return "комплексную сезонную обработку от клещей, комаров и муравьёв";
+    if (/таракан/.test(text)) return "профилактическую барьерную обработку и контроль через 30 дней";
+    if (/клоп/.test(text)) return "контрольный осмотр и профилактику повторного заноса";
+    if (/мыш|крыс|дератиз/.test(text)) return "установку и обслуживание мониторинговых контейнеров";
+    return "плановую профилактическую обработку со скидкой для постоянного клиента";
+  }
+  function upsellWhatsappUrl(job) {
+    const phone = String(job.client_phone || "").replace(/\D/g, "");
+    const message = `Здравствуйте! Это KazDez. После выполненной обработки можем дополнительно предложить ${upsellFor(job)}. Если актуально — подберём удобную дату и рассчитаем стоимость.`;
+    return phone ? `https://wa.me/${phone}?text=${encodeURIComponent(message)}` : "";
+  }
+  async function savePartner(payload, existing) {
+    const res = existing
+      ? await supabase.from("partners").update(payload).eq("id", existing.id)
+      : await supabase.from("partners").insert(payload);
+    if (res.error) { showToast("Ошибка: " + res.error.message); return; }
+    await logAction("Партнёр", `${existing ? "Изменён" : "Добавлен"}: ${payload.name} (${payload.default_share}%)`);
+    setModal(null); showToast("Сохранено"); load();
+  }
+  async function removePartner(p) {
+    await supabase.from("partners").delete().eq("id", p.id);
+    await logAction("Партнёр", `Удалён: ${p.name}`);
+    showToast("Партнёр удалён"); load();
+  }
+  async function markPartnerPaid(job, paid) {
+    const { error } = await supabase.from("jobs").update({ partner_paid: paid, partner_paid_at: paid ? new Date().toISOString() : null }).eq("id", job.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Выплата партнёру", `${partnerById(job.partner_id)?.name || "?"} · ${fmt(partnerShareAmt(job))} ₸ · ${paid ? "выплачено" : "отменено"}`);
+    showToast(paid ? "Отмечено как выплачено" : "Отметка снята"); load();
+  }
+  async function markCompPaid(job, paid) {
+    const { error } = await supabase.from("jobs").update({ partner_comp_paid: paid }).eq("id", job.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Компенсация партнёра", `${partnerById(job.partner_id)?.name || "?"} · ${fmt(job.partner_comp)} ₸ · ${paid ? "получено" : "снята отметка"}`);
+    showToast(paid ? "Отмечено как полученное" : "Отметка снята"); load();
+  }
+  async function saveDoc(payload, existing) {
+    const res = existing ? await supabase.from("doc_services").update(payload).eq("id", existing.id) : await supabase.from("doc_services").insert({ ...payload, created_by: session.user.id });
+    if (res.error) { showToast("Ошибка: " + res.error.message); return; }
+    await logAction("Документы", `${existing ? "Изменено" : "Добавлено"}: ${payload.type} · ${fmt(payload.amount)} ₸`);
+    setModal(null); showToast("Сохранено"); load();
+  }
+  async function setDocStatus(d, status) {
+    const { error } = await supabase.from("doc_services").update({ status }).eq("id", d.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Документы", `${d.type} · ${DOC_STATUS[status]?.label || status}`);
+    showToast("Статус обновлён"); load();
+  }
+  async function removeDoc(d) {
+    await supabase.from("doc_services").delete().eq("id", d.id);
+    await logAction("Документы", `Удалено: ${d.type} · ${fmt(d.amount)} ₸`);
+    showToast("Удалено"); load();
+  }
+  async function saveExpense(payload, existing) {
+    const res = existing ? await supabase.from("tech_expenses").update(payload).eq("id", existing.id) : await supabase.from("tech_expenses").insert({ ...payload, created_by: session.user.id });
+    if (res.error) { showToast("Ошибка: " + res.error.message); return; }
+    const t = techById(payload.tech_id);
+    await logAction("Выплата", `${t?.full_name || "?"} · ${EXPENSE_TYPES[payload.type] || payload.type} · ${fmt(payload.amount)} ₸`);
+    setModal(null); showToast("Сохранено"); load();
+  }
+  async function setExpenseStatus(e, status) {
+    const { error } = await supabase.from("tech_expenses").update({ status }).eq("id", e.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Выплата", `${techById(e.tech_id)?.full_name || "?"} · ${status === "paid" ? "выплачено" : "отменено"}`);
+    showToast("Обновлено"); load();
+  }
+  async function removeExpense(e) {
+    await supabase.from("tech_expenses").delete().eq("id", e.id);
+    await logAction("Выплата", `Удалено: ${techById(e.tech_id)?.full_name || "?"} · ${fmt(e.amount)} ₸`);
+    showToast("Удалено"); load();
+  }
+  async function editTechProfile(tech, payload) {
+    const { error } = await supabase.from("profiles").update(payload).eq("id", tech.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Дезинфектор", `Изменены данные: ${tech.full_name || "?"} → ${payload.full_name || "?"}`);
+    setModal(null); showToast("Сохранено"); load();
+  }
+  async function saveAppSetting(key, value) {
+    const { error } = await supabase.from("app_settings").upsert({ key, value, updated_at: new Date().toISOString() });
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Настройки", `${key} → ${JSON.stringify(value)}`);
+    showToast("Сохранено"); load();
+  }
+  async function addCatalogItem(table, name) {
+    const v = (name || "").trim();
+    if (!v) return;
+    const { error } = await supabase.from(table).insert({ name: v });
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Справочник", `Добавлено: ${v}`);
+    load();
+  }
+  async function removeCatalogItem(table, item) {
+    const { error } = await supabase.from(table).delete().eq("id", item.id);
+    if (error) { showToast("Ошибка: нельзя удалить — значение уже используется в заявках"); return; }
+    await logAction("Справочник", `Удалено: ${item.name}`);
+    load();
+  }
+  function setTheme(theme) {
+    localStorage.setItem("kd-theme", theme);
+    document.documentElement.setAttribute("data-theme", theme);
+  }
+  async function addExpCat(name, parentId) {
+    const v = (name || "").trim();
+    if (!v) return;
+    const { error } = await supabase.from("expense_categories").insert({ name: v, parent_id: parentId || null });
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Категории расходов", `Добавлено: ${v}`);
+    load();
+  }
+  async function removeExpCat(item) {
+    const { error } = await supabase.from("expense_categories").delete().eq("id", item.id);
+    if (error) { showToast("Ошибка: нельзя удалить — категория уже используется в расходах"); return; }
+    await logAction("Категории расходов", `Удалено: ${item.name}`);
+    load();
+  }
+  async function saveOpex(payload, existing) {
+    const res = existing ? await supabase.from("opex").update(payload).eq("id", existing.id) : await supabase.from("opex").insert({ ...payload, created_by: session.user.id });
+    if (res.error) { showToast("Ошибка: " + res.error.message); return; }
+    await logAction("Расходы", `${existing ? "Изменено" : "Добавлено"}: ${fmt(payload.amount)} ₸`);
+    setModal(null); showToast("Сохранено"); load();
+  }
+  async function removeOpex(o) {
+    await supabase.from("opex").delete().eq("id", o.id);
+    await logAction("Расходы", `Удалено: ${fmt(o.amount)} ₸`);
+    showToast("Удалено"); load();
+  }
+  async function saveMove(payload, existing) {
+    const res = existing ? await supabase.from("money_moves").update(payload).eq("id", existing.id) : await supabase.from("money_moves").insert({ ...payload, created_by: session.user.id, source: "manual" });
+    if (res.error) { showToast("Ошибка: " + res.error.message); return; }
+    const dirLabel = payload.direction === "income" ? "Доход" : payload.direction === "expense" ? "Расход" : "Перевод";
+    await logAction("Финансы", `${dirLabel}: ${fmt(payload.amount)} ₸`);
+    setModal(null); showToast("Сохранено"); load();
+  }
+  async function removeMove(m) {
+    if (m.source !== "manual") { showToast("Автоматическое движение — удалить нельзя"); return; }
+    await supabase.from("money_moves").delete().eq("id", m.id);
+    await logAction("Финансы", `Удалено движение: ${fmt(m.amount)} ₸`);
+    showToast("Удалено"); load();
+  }
+  async function saveAccount(payload, existing) {
+    const res = existing ? await supabase.from("accounts").update(payload).eq("id", existing.id) : await supabase.from("accounts").insert(payload);
+    if (res.error) { showToast("Ошибка: " + res.error.message); return; }
+    await logAction("Финансы", `Счёт ${existing ? "изменён" : "добавлен"}: ${payload.name}`);
+    setModal(null); showToast("Сохранено"); load();
+  }
+  async function removeAccount(acc) {
+    const { error } = await supabase.from("accounts").delete().eq("id", acc.id);
+    if (error) { showToast("Ошибка: по счёту есть движения — сначала перенеси/удали их"); return; }
+    await logAction("Финансы", `Счёт удалён: ${acc.name}`);
+    showToast("Удалено"); load();
+  }
+  async function requestDeposit(amount, note) {
+    const { error } = await supabase.from("cash_deposits").insert({ tech_id: session.user.id, amount: Number(amount) || 0, status: "pending", note: note || null });
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Касса", `Заявка на внесение: ${fmt(amount)} ₸ (ожидает подтверждения)`);
+    setModal(null); showToast("Отправлено на подтверждение"); load();
+  }
+  async function decideDeposit(dep, status, adminNote, accountId) {
+    const { error } = await supabase.from("cash_deposits").update({ status, decided_at: new Date().toISOString(), decided_by: session.user.id, admin_note: adminNote || null }).eq("id", dep.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    const who = techById(dep.tech_id)?.full_name || "?";
+    if (status === "confirmed" && accountId) {
+      const exists = moves.some((m) => m.source === "deposit" && m.ref_id === dep.id);
+      if (!exists) {
+        await supabase.from("money_moves").insert({
+          account_id: accountId, direction: "income", amount: dep.amount, move_date: new Date().toISOString().slice(0, 10),
+          note: `Сдача наличных: ${who}`, source: "deposit", ref_id: dep.id, created_by: session.user.id,
+        });
+      }
+    }
+    await logAction("Касса", `${status === "confirmed" ? "Подтверждено поступление" : "Отклонено"}: ${who} · ${fmt(dep.amount)} ₸${status === "confirmed" && accountId ? " → " + (accountById(accountId)?.name || "") : ""}`);
+    showToast(status === "confirmed" ? "Поступление подтверждено" : "Отклонено"); load();
+  }
+  async function cancelDeposit(dep) {
+    await supabase.from("cash_deposits").delete().eq("id", dep.id);
+    await logAction("Касса", `Отменена заявка на внесение: ${fmt(dep.amount)} ₸`);
+    showToast("Отменено"); load();
+  }
+  async function saveTask(payload, existing) {
+    const res = existing ? await supabase.from("tasks").update(payload).eq("id", existing.id) : await supabase.from("tasks").insert({ ...payload, created_by: session.user.id });
+    if (res.error) { showToast("Ошибка: " + res.error.message); return; }
+    await logAction("Задачи", `${existing ? "Изменена" : "Создана"}: ${payload.title}${payload.assignee_id ? " → " + personName(payload.assignee_id) : ""}`);
+    setModal(null); showToast("Сохранено"); load();
+  }
+  async function setTaskStatus(task, status) {
+    const { error } = await supabase.from("tasks").update({ status, done_at: status === "done" ? new Date().toISOString() : null }).eq("id", task.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Задачи", `${(TASK_STATUS[status] || {}).label || status}: ${task.title}`);
+    showToast("Обновлено"); load();
+  }
+  async function removeTask(task) {
+    await supabase.from("tasks").delete().eq("id", task.id);
+    await logAction("Задачи", `Удалена: ${task.title}`);
+    showToast("Удалено"); load();
+  }
+  async function saveTender(payload, services, existing) {
+    let tenderId = existing?.id;
+    if (existing) {
+      const { error } = await supabase.from("tenders").update(payload).eq("id", existing.id);
+      if (error) { showToast("Ошибка: " + error.message); return; }
+    } else {
+      const { data, error } = await supabase.from("tenders").insert({ ...payload, created_by: session.user.id }).select().single();
+      if (error) { showToast("Ошибка: " + error.message); return; }
+      tenderId = data.id;
+      // создаём график обработок, если задан
+      if (services && services.length) {
+        await supabase.from("tender_services").insert(services.map((s, i) => ({ tender_id: tenderId, seq: i + 1, due_date: s.due_date || null })));
+      }
+    }
+    await logAction("Тендеры", `${existing ? "Изменён" : "Создан"}: ${payload.contract_no || payload.title || "тендер"}`);
+    setModal(null); showToast("Сохранено"); load();
+  }
+  async function removeTender(t) {
+    await supabase.from("tenders").delete().eq("id", t.id);
+    await logAction("Тендеры", `Удалён: ${t.contract_no || t.title || "тендер"}`);
+    setModal(null); showToast("Удалено"); load();
+  }
+  async function saveGuarantee(payload, existing) {
+    const res = existing ? await supabase.from("tender_guarantees").update(payload).eq("id", existing.id) : await supabase.from("tender_guarantees").insert(payload);
+    if (res.error) { showToast("Ошибка: " + res.error.message); return; }
+    await logAction("Тендеры", `Обеспечение ${existing ? "изменено" : "добавлено"}: ${fmt(payload.amount)} ₸`);
+    setModal(null); showToast("Сохранено"); load();
+  }
+  async function removeGuarantee(g) {
+    // удаляем связанные движения по счетам (внесение + возвраты этого обеспечения)
+    const retIds = guaranteeReturns.filter((r) => r.guarantee_id === g.id).map((r) => r.id);
+    await supabase.from("money_moves").delete().eq("source", "tender_pledge").eq("ref_id", g.id);
+    if (retIds.length) await supabase.from("money_moves").delete().eq("source", "tender_return").in("ref_id", retIds);
+    await supabase.from("tender_guarantees").delete().eq("id", g.id);
+    await logAction("Тендеры", `Обеспечение удалено: ${fmt(g.amount)} ₸`);
+    showToast("Удалено"); load();
+  }
+  // Отметить обеспечение внесённым: списание с указанного счёта (замороженные деньги)
+  async function markGuaranteePaid(g, accountId, paidDate) {
+    await supabase.from("tender_guarantees").update({ paid: true, account_id: accountId || null, paid_date: paidDate || new Date().toISOString().slice(0, 10) }).eq("id", g.id);
+    if (accountId) {
+      const exists = moves.some((m) => m.source === "tender_pledge" && m.ref_id === g.id);
+      if (!exists) {
+        await supabase.from("money_moves").insert({
+          account_id: accountId, direction: "expense", amount: g.amount, move_date: paidDate || new Date().toISOString().slice(0, 10),
+          note: `Обеспечение (залог) по тендеру`, source: "tender_pledge", ref_id: g.id, created_by: session.user.id,
+        });
+      }
+    }
+    await logAction("Тендеры", `Внесено обеспечение ${fmt(g.amount)} ₸${accountId ? " со счёта " + (accountById(accountId)?.name || "") : ""}`);
+    setModal(null); showToast("Отмечено как внесённое"); load();
+  }
+  // Добавить частичный возврат: приход на указанный счёт
+  async function addGuaranteeReturn(g, amount, retDate, accountId, note) {
+    const { data, error } = await supabase.from("guarantee_returns").insert({ guarantee_id: g.id, amount: Number(amount) || 0, return_date: retDate || null, account_id: accountId || null, note: note || null, created_by: session.user.id }).select().single();
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    if (accountId) {
+      await supabase.from("money_moves").insert({
+        account_id: accountId, direction: "income", amount: Number(amount) || 0, move_date: retDate || new Date().toISOString().slice(0, 10),
+        note: `Возврат обеспечения по тендеру`, source: "tender_return", ref_id: data.id, created_by: session.user.id,
+      });
+    }
+    await logAction("Тендеры", `Возврат обеспечения ${fmt(amount)} ₸${accountId ? " на счёт " + (accountById(accountId)?.name || "") : ""}`);
+    setModal(null); showToast("Возврат добавлен"); load();
+  }
+  async function removeGuaranteeReturn(r) {
+    await supabase.from("money_moves").delete().eq("source", "tender_return").eq("ref_id", r.id);
+    await supabase.from("guarantee_returns").delete().eq("id", r.id);
+    await logAction("Тендеры", `Возврат удалён: ${fmt(r.amount)} ₸`);
+    showToast("Удалено"); load();
+  }
+  async function setServiceDone(s, done) {
+    await supabase.from("tender_services").update({ done, done_date: done ? new Date().toISOString().slice(0, 10) : null }).eq("id", s.id);
+    await logAction("Тендеры", `Обработка №${s.seq} ${done ? "выполнена" : "снята отметка"}`);
+    load();
+  }
+  async function addService(tenderId, seq, dueDate) {
+    await supabase.from("tender_services").insert({ tender_id: tenderId, seq, due_date: dueDate || null });
+    load();
+  }
+  async function removeService(s) {
+    await supabase.from("tender_services").delete().eq("id", s.id);
+    load();
+  }
+  async function saveLead(payload, existing) {
+    const res = existing
+      ? await supabase.from("leads").update({ ...payload, updated_at: new Date().toISOString() }).eq("id", existing.id)
+      : await supabase.from("leads").insert({ ...payload, created_by: session.user.id });
+    if (res.error) { showToast("Ошибка: " + res.error.message); return; }
+    await logAction("CRM", `Лид ${existing ? "изменён" : "создан"}: ${payload.name || payload.phone || "без имени"}`);
+    setModal(null); showToast("Сохранено"); load();
+  }
+  async function touchLead(lead) {
+    await supabase.from("leads").update({ updated_at: new Date().toISOString() }).eq("id", lead.id);
+    await logAction("CRM", `Касание с клиентом: ${lead.name || lead.phone || "?"}`);
+    showToast("Отмечено касание"); load();
+  }
+  async function setLeadStage(lead, stageId) {
+    await supabase.from("leads").update({ stage_id: stageId, updated_at: new Date().toISOString() }).eq("id", lead.id);
+    const stName = leadStages.find((s) => s.id === stageId)?.name || "";
+    await logAction("CRM", `Лид «${lead.name || lead.phone || "?"}» → ${stName}`);
+    load();
+  }
+  async function removeLead(lead) {
+    await supabase.from("leads").delete().eq("id", lead.id);
+    await logAction("CRM", `Лид удалён: ${lead.name || lead.phone || "?"}`);
+    showToast("Удалено"); load();
+  }
+  async function convertLeadToJob(lead) {
+    // создаём заявку из лида: телефон, адрес, источник
+    const payload = {
+      type: "Первичная", scheduled_date: null, address: lead.address || "", source: lead.source || "",
+      client_phone: lead.phone || "+7 ", brand: "KazDez", guarantee_months: defaultGuarantee,
+      pest: "", price_options: [], note: lead.name ? `Клиент: ${lead.name}` : null, created_by: session.user.id,
+    };
+    const { data, error } = await supabase.from("jobs").insert(payload).select().single();
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    // помечаем лид как сконвертированный + двигаем в финальную стадию, если есть
+    const finalStage = leadStages.find((s) => s.is_final && !s.is_lost);
+    await supabase.from("leads").update({ converted_job_id: data.id, stage_id: finalStage?.id || lead.stage_id, updated_at: new Date().toISOString() }).eq("id", lead.id);
+    await ensureCatalog("client_sources", sources, lead.source);
+    await logAction("CRM", `Лид «${lead.name || lead.phone || "?"}» → создана заявка`);
+    setModal(null); showToast("Заявка создана из лида"); setTab("jobs"); load();
+  }
+  async function addLeadStage(name) {
+    const v = (name || "").trim();
+    if (!v) return;
+    const maxSort = Math.max(0, ...leadStages.map((s) => s.sort || 0));
+    await supabase.from("lead_stages").insert({ name: v, sort: maxSort + 10 });
+    await logAction("CRM", `Стадия добавлена: ${v}`);
+    load();
+  }
+  async function removeLeadStage(stage) {
+    const { error } = await supabase.from("lead_stages").delete().eq("id", stage.id);
+    if (error) { showToast("Ошибка: на этой стадии есть лиды — сначала перенеси их"); return; }
+    await logAction("CRM", `Стадия удалена: ${stage.name}`);
+    load();
+  }
+  async function moveLeadStage(stage, dir) {
+    const sorted = [...leadStages].sort((a, b) => a.sort - b.sort);
+    const idx = sorted.findIndex((s) => s.id === stage.id);
+    const ni = idx + dir;
+    if (ni < 0 || ni >= sorted.length) return;
+    const a = sorted[idx], b = sorted[ni];
+    await supabase.from("lead_stages").update({ sort: b.sort }).eq("id", a.id);
+    await supabase.from("lead_stages").update({ sort: a.sort }).eq("id", b.id);
+    load();
+  }
+  async function saveMktChannel(payload, existing) {
+    const res = existing ? await supabase.from("mkt_channels").update(payload).eq("id", existing.id) : await supabase.from("mkt_channels").insert(payload);
+    if (res.error) { showToast("Ошибка: " + res.error.message); return; }
+    await logAction("Маркетинг", `Канал ${existing ? "изменён" : "добавлен"}: ${payload.name}`);
+    setModal(null); showToast("Сохранено"); load();
+  }
+  async function removeMktChannel(ch) {
+    await supabase.from("mkt_channels").delete().eq("id", ch.id);
+    await logAction("Маркетинг", `Канал удалён: ${ch.name}`);
+    showToast("Удалено"); load();
+  }
+  async function addMktTopup(channelId, amount, date, accountId, note) {
+    const { error } = await supabase.from("mkt_topups").insert({ channel_id: channelId, amount: Number(amount) || 0, topup_date: date, account_id: accountId || null, note: note || null, created_by: session.user.id });
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    // если указан счёт — списываем как расход (реклама уходит с реального счёта)
+    if (accountId) {
+      await supabase.from("money_moves").insert({
+        account_id: accountId, direction: "expense", amount: Number(amount) || 0, move_date: date,
+        note: `Реклама: ${(mktChannels.find((c) => c.id === channelId) || {}).name || ""}`, source: "manual", created_by: session.user.id,
+      });
+    }
+    await logAction("Маркетинг", `Пополнение ${fmt(amount)} ₸`);
+    setModal(null); showToast("Пополнение записано"); load();
+  }
+  async function removeMktTopup(t) {
+    await supabase.from("mkt_topups").delete().eq("id", t.id);
+    await logAction("Маркетинг", `Пополнение удалено: ${fmt(t.amount)} ₸`);
+    showToast("Удалено"); load();
+  }
+  async function addDayOff(techId, offDate, note) {
+    const { error } = await supabase.from("tech_days_off").insert({ tech_id: techId, off_date: offDate, note: note || null, created_by: session.user.id });
+    if (error) { showToast(error.message.includes("duplicate") ? "У этого сотрудника уже отмечен выходной на эту дату" : "Ошибка: " + error.message); return; }
+    await logAction("График", `Выходной: ${personName(techId)} · ${isoToRu(offDate)}`);
+    setModal(null); showToast("Выходной отмечен"); load();
+  }
+  async function removeDayOff(row) {
+    await supabase.from("tech_days_off").delete().eq("id", row.id);
+    await logAction("График", `Выходной снят: ${personName(row.tech_id)} · ${isoToRu(row.off_date)}`);
+    showToast("Выходной снят"); load();
+  }
+  async function saveJobEconomics(job, payload) {
+    const { error } = await supabase.from("jobs").update(payload).eq("id", job.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Юнит-экономика", `${job.pest} · транспорт ${fmt(payload.transport_cost)} ₸ · прочее ${fmt(payload.other_cost)} ₸`);
+    setModal(null); showToast("Расходы заявки сохранены"); load();
+  }
+  async function saveFollowup(payload, existing) {
+    const data = { ...payload, created_by: existing?.created_by || session.user.id, updated_at: new Date().toISOString() };
+    const res = existing ? await supabase.from("client_followups").update(data).eq("id", existing.id) : await supabase.from("client_followups").insert(data);
+    if (res.error) { showToast("Ошибка: " + res.error.message); return; }
+    await logAction("Касание", `${payload.phone} · ${payload.kind} · ${isoToRu(payload.due_date)}`);
+    setModal(null); showToast("Касание запланировано"); load();
+  }
+  async function setFollowupDone(item, result = "Связались") {
+    const { error } = await supabase.from("client_followups").update({ status: "done", result, completed_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", item.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Касание", `Завершено: ${item.phone} · ${result}`); showToast("Касание завершено"); load();
+  }
+  async function saveQualityCheck(job, payload, existing) {
+    const data = { ...payload, checked_by: session.user.id, updated_at: new Date().toISOString() };
+    const res = existing ? await supabase.from("quality_checks").update(data).eq("id", existing.id) : await supabase.from("quality_checks").upsert(data, { onConflict: "job_id" });
+    if (res.error) { showToast("Ошибка: " + res.error.message); return; }
+    if (payload.result === "repeat" && !job.repeat_state) await supabase.from("jobs").update({ repeat_state: "on_repeat", repeat_since: new Date().toISOString() }).eq("id", job.id);
+    await logAction("Контроль качества", `${job.client_phone} · оценка ${payload.rating || "—"} · ${payload.result}`);
+    setModal(null); showToast(payload.result === "repeat" ? "Сохранено и отправлено в «Повторы»" : "Контроль качества сохранён"); load();
+  }
+  async function saveContract(payload, existing) {
+    const data = { ...payload, created_by: existing?.created_by || session.user.id, updated_at: new Date().toISOString() };
+    const res = existing ? await supabase.from("service_contracts").update(data).eq("id", existing.id) : await supabase.from("service_contracts").insert(data);
+    if (res.error) { showToast("Ошибка: " + res.error.message); return; }
+    await logAction("Абонент", `${existing ? "Изменён" : "Добавлен"}: ${payload.client_name} · каждые ${payload.interval_days} дн.`);
+    setModal(null); showToast("Абонент сохранён"); load();
+  }
+  async function removeContract(contract) {
+    const { error } = await supabase.from("service_contracts").delete().eq("id", contract.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    await logAction("Абонент", `Удалён: ${contract.client_name}`); showToast("Удалено"); load();
+  }
+  async function createContractJob(contract) {
+    const payload = {
+      type: "Плановая", scheduled_date: contract.next_service_date, scheduled_time: "", address: contract.address, source: "Абонентский договор",
+      pest: contract.service, price_options: [{ label: "Абонентское обслуживание", amount: Number(contract.price) || 0 }], client_phone: contract.phone,
+      contact_name: contract.client_name, guarantee_months: 0, status: "new", service_contract_id: contract.id, created_by: session.user.id,
+    };
+    const ins = await supabase.from("jobs").insert(payload);
+    if (ins.error) { showToast("Ошибка: " + ins.error.message); return; }
+    const next = parseIso(contract.next_service_date) || new Date(); next.setDate(next.getDate() + (Number(contract.interval_days) || 30));
+    await supabase.from("service_contracts").update({ last_generated_date: contract.next_service_date, next_service_date: isoOf(next), updated_at: new Date().toISOString() }).eq("id", contract.id);
+    await logAction("Абонент", `Создана плановая заявка: ${contract.client_name} · ${isoToRu(contract.next_service_date)}`);
+    showToast("Плановая заявка создана"); setTab("jobs"); load();
+  }
+  async function saveEquipment(payload, existing) {
+    const res = existing ? await supabase.from("equipment").update(payload).eq("id", existing.id) : await supabase.from("equipment").insert(payload);
+    if (res.error) { showToast("Ошибка: " + res.error.message); return; }
+    await logAction("Оборудование", `${existing ? "Изменено" : "Добавлено на склад"}: ${payload.name}`);
+    setModal(null); showToast("Сохранено"); load();
+  }
+  async function removeEquipment(item) {
+    const { error } = await supabase.from("equipment").delete().eq("id", item.id);
+    if (error) { showToast("Ошибка: нельзя удалить — есть история выдач этой позиции"); return; }
+    await logAction("Оборудование", `Удалено из справочника: ${item.name}`);
+    showToast("Удалено"); load();
+  }
+  async function issueEquipment(payload) {
+    const { error } = await supabase.from("equipment_handouts").insert({ ...payload, created_by: session.user.id });
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    const t = techById(payload.tech_id); const e = equipById(payload.equipment_id);
+    await logAction("Оборудование", `Выдано: ${t?.full_name || "?"} · ${e?.name || "?"} — ${payload.qty} ${e?.unit || "шт"}`);
+    setModal(null); showToast("Выдано"); load();
+  }
+  async function setEquipStatus(h, status) {
+    const { error } = await supabase.from("equipment_handouts").update({ status }).eq("id", h.id);
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    const t = techById(h.tech_id); const e = equipById(h.equipment_id);
+    await logAction("Оборудование", `${t?.full_name || "?"} · ${e?.name || "?"} · ${(EQUIP_STATUS[status] || {}).label || status}`);
+    showToast("Обновлено"); load();
+  }
+  async function reportEquipIssue(h, status, note) {
+    const { error } = await supabase.rpc("report_equipment_issue", { p_handout: h.id, p_status: status, p_note: note || null });
+    if (error) { showToast("Ошибка: " + error.message); return; }
+    setModal(null); showToast("Сообщение отправлено"); load();
+  }
+  async function transferEquipment(h, newTechId, note) {
+    const upd = await supabase.from("equipment_handouts").update({ status: "transferred", note: note || h.note }).eq("id", h.id);
+    if (upd.error) { showToast("Ошибка: " + upd.error.message); return; }
+    const ins = await supabase.from("equipment_handouts").insert({
+      tech_id: newTechId, equipment_id: h.equipment_id, qty: h.qty, handout_date: new Date().toISOString().slice(0, 10),
+      status: "with_tech", note: `Передано от ${techById(h.tech_id)?.full_name || "?"}${note ? " — " + note : ""}`, created_by: session.user.id,
+    });
+    if (ins.error) { showToast("Ошибка: " + ins.error.message); return; }
+    const e = equipById(h.equipment_id);
+    await logAction("Оборудование", `Передано: ${e?.name || "?"} · ${techById(h.tech_id)?.full_name || "?"} → ${techById(newTechId)?.full_name || "?"}`);
+    setModal(null); showToast("Оборудование передано"); load();
+  }
+
+  async function exportExcel() {
+    try {
+      const wb = new ExcelJS.Workbook();
+      wb.creator = "KazDez"; wb.created = new Date();
+
+      async function addSheet(name, columns, rows) {
+        const ws = wb.addWorksheet(name, { views: [{ state: "frozen", ySplit: 1 }] });
+        ws.columns = columns.map((c) => ({ header: c.header, key: c.key, width: c.width || 16 }));
+        rows.forEach((r) => ws.addRow(r));
+        const header = ws.getRow(1);
+        header.height = 24;
+        header.eachCell((cell) => {
+          cell.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 11 };
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0E7C66" } };
+          cell.alignment = { vertical: "middle", horizontal: "left" };
+        });
+        for (let i = 2; i <= ws.rowCount; i++) {
+          const row = ws.getRow(i);
+          row.eachCell({ includeEmpty: true }, (cell) => {
+            cell.alignment = { vertical: "middle" };
+            cell.border = { bottom: { style: "hair", color: { argb: "FFE4E8E4" } } };
+          });
+          if (i % 2 === 0) row.eachCell({ includeEmpty: true }, (cell) => { cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF6F8F6" } }; });
+        }
+        columns.forEach((c, idx) => { if (c.money) ws.getColumn(idx + 1).numFmt = '#,##0" ₸"'; });
+        if (rows.length) ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: columns.length } };
+        return ws;
+      }
+
+      await addSheet("Заявки", [
+        { header: "Дата", key: "date", width: 12 }, { header: "Время", key: "time", width: 8 },
+        { header: "Бренд", key: "brand", width: 12 }, { header: "Тип", key: "type", width: 12 }, { header: "Вид", key: "pest", width: 16 },
+        { header: "Партнёр", key: "partner", width: 14 }, { header: "Доля %", key: "sharePct", width: 9 },
+        { header: "Доля ₸", key: "shareAmt", width: 12, money: true }, { header: "Доля выплачена", key: "sharePaid", width: 14 },
+        { header: "Компенсация нам ₸", key: "comp", width: 16, money: true }, { header: "Компенсация получена", key: "compPaid", width: 16 },
+        { header: "Адрес", key: "address", width: 32 }, { header: "Этаж", key: "floor", width: 8 }, { header: "Метраж", key: "area", width: 9 },
+        { header: "Источник", key: "source", width: 12 }, { header: "Телефон", key: "phone", width: 16 }, { header: "Гарантия (мес)", key: "guarantee", width: 10 },
+        { header: "Дезинфектор", key: "tech", width: 16 }, { header: "Статус", key: "status", width: 12 }, { header: "Причина отмены", key: "cancelReason", width: 24 },
+        { header: "Цена (варианты)", key: "priceVariants", width: 26 },
+        { header: "Оплачено", key: "paid", width: 12, money: true }, { header: "Наличными", key: "cash", width: 12, money: true },
+        { header: "QR", key: "qr", width: 12, money: true }, { header: "Способ", key: "method", width: 12 },
+        { header: "Себестоимость", key: "cost", width: 14, money: true }, { header: "Комиссия QR", key: "qrfee", width: 12, money: true },
+        { header: "Прибыль", key: "profit", width: 14, money: true }, { header: "Препараты", key: "chems", width: 32 },
+        { header: "Комментарий", key: "note", width: 26 }, { header: "Примечание оплаты", key: "paynote", width: 22 },
+        { header: "Повторный", key: "repeat", width: 24 }, { header: "Документы", key: "docsinfo", width: 24 },
+      ], jobs.map((j) => ({
+        date: isoToRu(j.scheduled_date), time: j.scheduled_time, brand: j.brand === "partner" ? "Партнёр" : j.brand, type: j.type, pest: j.pest,
+        partner: j.partner_id ? (partnerById(j.partner_id)?.name || "") : "", sharePct: j.partner_id ? (j.partner_share ?? "") : "",
+        shareAmt: partnerShareAmt(j) || "", sharePaid: j.partner_id && j.status === "done" ? (j.partner_paid ? "да" : "нет") : "",
+        comp: j.partner_comp || "", compPaid: j.partner_comp > 0 ? (j.partner_comp_paid ? "да" : "нет") : "",
+        address: j.address, floor: j.floor, area: j.area, source: j.source, phone: j.client_phone, guarantee: j.guarantee_months,
+        tech: techById(j.assigned_to)?.full_name || "", status: (STATUS[j.status] && STATUS[j.status].label) || j.status, cancelReason: j.cancel_reason || "",
+        priceVariants: (j.price_options || []).map((p) => `${p.amount}${p.label ? " " + p.label : ""}`).join("; "),
+        paid: j.report_paid ?? "", cash: j.report_cash ?? "", qr: j.report_qr ?? "", method: j.report_method ?? "",
+        cost: j.status === "done" ? Math.round(jobChemCost(j)) : "",
+        qrfee: j.status === "done" ? Math.round((Number(j.report_qr) || 0) * qrFeeRate) : "",
+        profit: j.status === "done" ? Math.round((Number(j.report_paid) || 0) - jobChemCost(j) - partnerShareAmt(j) - (Number(j.report_qr) || 0) * qrFeeRate) : "",
+        chems: (j.chemicals || []).map((l) => { const c = lineChem(l); return `${l.name || (c && c.name) || ""} ${fmtAmount(lineAmount(l), c && c.unit_kind)}`; }).join("; "),
+        note: j.note ?? "", paynote: j.report_note ?? "",
+        repeat: j.followup_wanted ? `${j.followup_date || "да"}${j.followup_note ? " — " + j.followup_note : ""}` : "",
+        docsinfo: j.docs_needed ? `${[j.docs_avr && "АВР", j.docs_dogovor && "Договор"].filter(Boolean).join(", ") || "да"}${j.docs_done ? " (готовы)" : " (ожидают)"}` : "",
+      })));
+
+      await addSheet("Склад", [
+        { header: "Препарат", key: "name", width: 20 }, { header: "Единица", key: "unit", width: 12 },
+        { header: "Куплено", key: "bought", width: 14 }, { header: "Ушло", key: "used", width: 14 }, { header: "Остаток", key: "left", width: 14 },
+        { header: "Цена за ед. (₸)", key: "price", width: 14, money: true }, { header: "Стоимость остатка", key: "stockValue", width: 16, money: true },
+      ], chemicals.map((c) => {
+        const u = chemUnit(c.unit_kind);
+        const used = jobs.reduce((s, j) => s + (j.chemicals || []).filter((x) => (x.chemical_id ? x.chemical_id === c.id : norm(x.name) === norm(c.name))).reduce((a, x) => a + lineAmount(x), 0), 0);
+        const remaining = (Number(c.purchased_ml) || 0) - used;
+        return { name: c.name, unit: u.big + "/" + u.small, bought: fmtAmount(c.purchased_ml, c.unit_kind), used: fmtAmount(used, c.unit_kind), left: fmtAmount(remaining, c.unit_kind), price: c.price_per_liter, stockValue: Math.round(remaining * pricePerBase(c)) };
+      }));
+
+      await addSheet("Дезинфекторы", [
+        { header: "Имя", key: "name", width: 20 }, { header: "Телефон", key: "phone", width: 16 }, { header: "Заявок", key: "count", width: 10 },
+      ], techs.map((t) => ({ name: t.full_name, phone: t.phone, count: jobs.filter((j) => j.assigned_to === t.id).length })));
+
+      const ledgerRows = [];
+      techs.forEach((t) => techLedger(t.id).forEach((r) => ledgerRows.push({
+        tech: t.full_name, chem: r.chem.name,
+        issued: fmtAmount(r.issued, r.chem.unit_kind), opening: fmtAmount(r.opening, r.chem.unit_kind),
+        consumed: fmtAmount(r.consumed, r.chem.unit_kind), balance: fmtAmount(r.balance, r.chem.unit_kind),
+      })));
+      await addSheet("Учёт по сотрудникам", [
+        { header: "Сотрудник", key: "tech", width: 18 }, { header: "Препарат", key: "chem", width: 18 },
+        { header: "Выдано", key: "issued", width: 14 }, { header: "Стартовый остаток", key: "opening", width: 16 },
+        { header: "Расход", key: "consumed", width: 14 }, { header: "На руках", key: "balance", width: 14 },
+      ], ledgerRows);
+
+      await addSheet("Журнал", [
+        { header: "Когда", key: "when", width: 16 }, { header: "Кто", key: "who", width: 16 },
+        { header: "Действие", key: "action", width: 16 }, { header: "Детали", key: "summary", width: 40 },
+      ], audit.map((a) => ({ when: fmtTs(a.ts), who: a.actor, action: a.action, summary: a.summary })));
+
+      await addSheet("Корзина", [
+        { header: "Удалено", key: "when", width: 16 }, { header: "Кем", key: "who", width: 16 },
+        { header: "Вид", key: "pest", width: 16 }, { header: "Адрес", key: "address", width: 28 }, { header: "Было оплачено", key: "paid", width: 14, money: true },
+      ], trash.map((t) => ({ when: fmtTs(t.deleted_at), who: t.deleted_by, pest: t.job.pest, address: t.job.address, paid: t.job.report_paid ?? "" })));
+
+      await addSheet("Документы", [
+        { header: "Тип", key: "type", width: 24 }, { header: "Партнёр", key: "partner", width: 16 }, { header: "Клиент", key: "client", width: 22 },
+        { header: "Расчёт", key: "calc", width: 18 }, { header: "Заработок", key: "amount", width: 14, money: true },
+        { header: "Статус", key: "status", width: 12 }, { header: "Заметка", key: "note", width: 24 },
+      ], docs.map((d) => ({
+        type: d.type, partner: d.partner_id ? (partnerById(d.partner_id)?.name || "") : "", client: d.client || "",
+        calc: d.amount_mode === "percent" ? `${d.percent}% от ${d.base_sum}` : "сумма",
+        amount: d.amount, status: (DOC_STATUS[d.status] || {}).label || d.status, note: d.note || "",
+      })));
+
+      await addSheet("Выплаты сотрудникам", [
+        { header: "Сотрудник", key: "tech", width: 18 }, { header: "Тип", key: "type", width: 14 },
+        { header: "Сумма", key: "amount", width: 14, money: true }, { header: "Дата", key: "date", width: 12 },
+        { header: "Статус", key: "status", width: 12 }, { header: "Заметка", key: "note", width: 24 },
+      ], expenses.map((e) => ({
+        tech: techById(e.tech_id)?.full_name || "", type: EXPENSE_TYPES[e.type] || e.type,
+        amount: e.amount, date: e.expense_date ? isoToRu(e.expense_date) : "", status: e.status === "paid" ? "Выплачено" : "К выплате", note: e.note || "",
+      })));
+
+      await addSheet("Оборудование и СИЗ", [
+        { header: "Название", key: "name", width: 26 }, { header: "Категория", key: "category", width: 16 },
+        { header: "Единица", key: "unit", width: 10 }, { header: "Цена за ед.", key: "price", width: 14, money: true },
+        { header: "На руках (кол-во)", key: "issued", width: 16 }, { header: "Стоимость на руках", key: "value", width: 18, money: true },
+      ], equipment.map((e) => ({
+        name: e.name, category: EQUIP_CATEGORIES[e.category] || e.category, unit: e.unit, price: e.price,
+        issued: equipIssuedQty(e.id), value: Math.round(equipIssuedQty(e.id) * (Number(e.price) || 0)),
+      })));
+
+      await addSheet("Выдачи оборудования", [
+        { header: "Сотрудник", key: "tech", width: 18 }, { header: "Позиция", key: "equip", width: 24 },
+        { header: "Кол-во", key: "qty", width: 10 }, { header: "Дата", key: "date", width: 12 },
+        { header: "Статус", key: "status", width: 16 }, { header: "Стоимость", key: "value", width: 14, money: true }, { header: "Заметка", key: "note", width: 26 },
+      ], equipHandouts.map((h) => {
+        const e = equipById(h.equipment_id);
+        return {
+          tech: techById(h.tech_id)?.full_name || "", equip: e?.name || "", qty: h.qty, date: h.handout_date ? isoToRu(h.handout_date) : "",
+          status: (EQUIP_STATUS[h.status] || {}).label || h.status, value: Math.round((Number(h.qty) || 0) * (Number(e?.price) || 0)), note: h.note || "",
+        };
+      }));
+
+      await addSheet("Операционные расходы", [
+        { header: "Категория", key: "category", width: 22 }, { header: "Подкатегория", key: "subcategory", width: 20 },
+        { header: "Сумма", key: "amount", width: 14, money: true }, { header: "Дата", key: "date", width: 12 }, { header: "Комментарий", key: "note", width: 30 },
+      ], opex.map((o) => ({
+        category: catName(o.category_id), subcategory: o.subcategory_id ? catName(o.subcategory_id) : "",
+        amount: o.amount, date: o.spent_date ? isoToRu(o.spent_date) : "", note: o.note || "",
+      })));
+
+      await addSheet("Касса — внесения", [
+        { header: "Дезинфектор", key: "tech", width: 18 }, { header: "Сумма", key: "amount", width: 14, money: true },
+        { header: "Статус", key: "status", width: 14 }, { header: "Заявлено", key: "requested", width: 18 },
+        { header: "Решение", key: "decided", width: 18 }, { header: "Комментарий", key: "note", width: 24 }, { header: "Прим. админа", key: "adminNote", width: 24 },
+      ], deposits.map((d) => ({
+        tech: techById(d.tech_id)?.full_name || "", amount: d.amount, status: (DEPOSIT_STATUS[d.status] || {}).label || d.status,
+        requested: d.requested_at ? fmtTs(d.requested_at) : "", decided: d.decided_at ? fmtTs(d.decided_at) : "", note: d.note || "", adminNote: d.admin_note || "",
+      })));
+
+      await addSheet("Задачи", [
+        { header: "Задача", key: "title", width: 30 }, { header: "Тип", key: "type", width: 14 }, { header: "Приоритет", key: "priority", width: 12 },
+        { header: "Исполнитель", key: "assignee", width: 18 }, { header: "Срок", key: "due", width: 12 }, { header: "Статус", key: "status", width: 12 }, { header: "Подробности", key: "desc", width: 34 },
+      ], tasks.map((t) => ({
+        title: t.title, type: TASK_TYPES[t.type] || t.type, priority: t.priority === "urgent" ? "Срочный" : "Обычный",
+        assignee: personName(t.assignee_id), due: t.due_date ? isoToRu(t.due_date) : "", status: (TASK_STATUS[t.status] || {}).label || t.status, desc: t.description || "",
+      })));
+
+      await addSheet("Тендеры", [
+        { header: "Номер договора", key: "no", width: 18 }, { header: "Заказчик", key: "customer", width: 22 }, { header: "Название", key: "title", width: 24 }, { header: "Адрес", key: "address", width: 28 },
+        { header: "Сумма договора", key: "amount", width: 16, money: true }, { header: "Наша доля %", key: "pct", width: 12 }, { header: "Наша доля ₸", key: "ourAmt", width: 16, money: true },
+        { header: "Партнёр", key: "partner", width: 18 }, { header: "Статус", key: "status", width: 14 },
+        { header: "Обработок сделано", key: "svcDone", width: 16 }, { header: "Заморожено в залогах", key: "frozen", width: 18, money: true },
+      ], tenders.map((t) => {
+        const svcs = tenderServices.filter((s) => s.tender_id === t.id);
+        const gtees = tenderGuarantees.filter((g) => g.tender_id === t.id);
+        const frozen = gtees.filter((g) => g.paid && !g.returned).reduce((s, g) => s + (Number(g.amount) || 0), 0);
+        return {
+          no: t.contract_no || "", customer: t.customer || "", title: t.title || "", address: t.address || "", amount: t.amount, pct: t.our_share_pct,
+          ourAmt: Math.round((Number(t.amount) || 0) * (Number(t.our_share_pct) || 0) / 100),
+          partner: partnerById(t.partner_id)?.name || "", status: (TENDER_STATUS[t.status] || {}).label || t.status,
+          svcDone: `${svcs.filter((s) => s.done).length}/${svcs.length}`, frozen,
+        };
+      }));
+
+      const buf = await wb.xlsx.writeBuffer();
+      const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `KazDez_база_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+      showToast("Файл Excel выгружен");
+    } catch (e) { showToast("Ошибка выгрузки"); }
+  }
+
+  // ---- финансы за период ----
+  const range = periodRange(pMode, pOff);
+  const fin = (() => {
+    const weekIdx = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 0: 6 };
+    const week = [1, 2, 3, 4, 5, 6, 0].map((dow) => ({ dow, label: WEEKDAYS[dow].slice(0, 2), count: 0, revenue: 0 }));
+    let revenue = 0, cost = 0, cash = 0, qr = 0, partnerShares = 0, executorShares = 0, qrFees = 0, partnerComp = 0; const bySource = {}; const byTech = {};
+    jobs.forEach((j) => {
+      if (j.status === "canceled") return;
+      const isPartnerJob = j.brand === "partner";
+      if (brandFilter === "ours" && isPartnerJob) return;
+      if (brandFilter === "partner" && !isPartnerJob) return;
+      const dt = parseIso(j.scheduled_date);
+      const inR = pMode === "all" || (dt && dt.getTime() >= range.start && dt.getTime() < range.end);
+      if (!inR) return;
+      const srcRaw = (j.source || "Не указан").trim() || "Не указан";
+      const srcKey = norm(srcRaw);
+      if (!bySource[srcKey]) bySource[srcKey] = { label: srcRaw, count: 0, revenue: 0 };
+      bySource[srcKey].count++;
+      if (j.status === "done") {
+        const paid = Number(j.report_paid) || 0;
+        const jqr = Number(j.report_qr) || 0;
+        const jcost = jobChemCost(j);
+        revenue += paid; cost += jcost; cash += Number(j.report_cash) || 0; qr += jqr;
+        qrFees += jqr * qrFeeRate;
+        partnerShares += partnerShareAmt(j);
+        // доля партнёра-исполнителя (мы отдали заявку): вычитается только когда вся сумма пришла к нам (qr_full)
+        if (j.executor_partner_id && j.executor_settlement === "qr_full") executorShares += Math.round(paid * (Number(j.executor_share_pct) || 0) / 100);
+        bySource[srcKey].revenue += paid;
+        if (dt) { const wi = weekIdx[dt.getDay()]; week[wi].count++; week[wi].revenue += paid; }
+        if (j.assigned_to) {
+          if (!byTech[j.assigned_to]) byTech[j.assigned_to] = { count: 0, revenue: 0, cost: 0 };
+          byTech[j.assigned_to].count++; byTech[j.assigned_to].revenue += paid; byTech[j.assigned_to].cost += jcost;
+        }
+      }
+      if (j.partner_comp > 0) partnerComp += Number(j.partner_comp) || 0;
+    });
+    const weekMax = Math.max(1, ...week.map((w) => w.revenue));
+    // средний чек по трём срезам (в том же периоде, независимо от фильтра бренда)
+    const avg = { ours: { sum: 0, n: 0 }, partner: { sum: 0, n: 0 } };
+    jobs.forEach((j) => {
+      if (j.status !== "done") return;
+      const dt = parseIso(j.scheduled_date);
+      const inR = pMode === "all" || (dt && dt.getTime() >= range.start && dt.getTime() < range.end);
+      if (!inR) return;
+      const paid = Number(j.report_paid) || 0;
+      if (paid <= 0) return;
+      const k = j.brand === "partner" ? "partner" : "ours";
+      avg[k].sum += paid; avg[k].n++;
+    });
+    const avgCheck = {
+      ours: avg.ours.n ? Math.round(avg.ours.sum / avg.ours.n) : 0, oursN: avg.ours.n,
+      partner: avg.partner.n ? Math.round(avg.partner.sum / avg.partner.n) : 0, partnerN: avg.partner.n,
+      all: (avg.ours.n + avg.partner.n) ? Math.round((avg.ours.sum + avg.partner.sum) / (avg.ours.n + avg.partner.n)) : 0, allN: avg.ours.n + avg.partner.n,
+    };
+    return { revenue, cost, partnerShares, executorShares, qrFees, partnerComp, profit: revenue - cost - partnerShares - executorShares - qrFees + partnerComp, cash, qr, bySource, byTech, week, weekMax, avgCheck };
+  })();
+
+  const expensesInRange = expenses.filter((e) => {
+    if (pMode === "all") return true;
+    if (!e.expense_date) return false;
+    const t = new Date(e.expense_date).getTime();
+    return t >= range.start && t < range.end;
+  }).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const catName = (id) => (expCats.find((c) => c.id === id) || {}).name || "—";
+  const accountById = (id) => accounts.find((a) => a.id === id);
+  const qrAccountId = settings.qr_account_id || null;
+  const cashDepositAccountId = settings.cash_account_id || null;
+  // авто-доход QR по выполненным заявкам ПОСЛЕ даты начального остатка QR-счёта (иначе задвоение)
+  const qrAcc = qrAccountId ? accountById(qrAccountId) : null;
+  const qrOpeningDate = qrAcc?.opening_date || null;
+  const qrJobsForAuto = jobs.filter((j) => {
+    if (j.status !== "done" || !(Number(j.report_qr) > 0)) return false;
+    if (!qrOpeningDate) return true;
+    return (j.scheduled_date || "") >= qrOpeningDate;
+  });
+  const qrAutoIncome = qrJobsForAuto.reduce((s, j) => s + (Number(j.report_qr) || 0), 0);
+  const qrAutoFee = qrJobsForAuto.reduce((s, j) => s + (Number(j.report_qr) || 0) * qrFeeRate, 0);
+  const accountBalance = (accId) => {
+    const acc = accountById(accId);
+    const openDate = acc?.opening_date || null;
+    // движения считаем начиная с даты начального остатка (или все, если дата не задана)
+    const afterOpen = (d) => !openDate || (d || "") >= openDate;
+    let bal = Number(acc?.opening_balance) || 0;
+    moves.forEach((m) => {
+      if (m.direction === "income" && m.account_id === accId && afterOpen(m.move_date)) bal += Number(m.amount) || 0;
+      if (m.direction === "expense" && m.account_id === accId && afterOpen(m.move_date)) bal -= Number(m.amount) || 0;
+      if (m.direction === "transfer") {
+        if (m.account_id === accId && afterOpen(m.move_date)) bal -= Number(m.amount) || 0;
+        if (m.to_account_id === accId && afterOpen(m.move_date)) bal += Number(m.amount) || 0;
+      }
+    });
+    if (accId && accId === qrAccountId) bal += qrAutoIncome - qrAutoFee;
+    return bal;
+  };
+  const opexInRangeList = opex.filter((o) => {
+    if (pMode === "all") return true;
+    if (!o.spent_date) return false;
+    const t = new Date(o.spent_date).getTime();
+    return t >= range.start && t < range.end;
+  });
+  const opexInRange = opexInRangeList.reduce((s, o) => s + (Number(o.amount) || 0), 0);
+  const netProfit = fin.profit - expensesInRange - opexInRange;
+
+  // ---- склад ----
+  const inventory = chemicals.map((c) => {
+    const used = jobs.reduce((s, j) => s + (j.chemicals || []).filter((x) => (x.chemical_id ? x.chemical_id === c.id : norm(x.name) === norm(c.name))).reduce((a, x) => a + lineAmount(x), 0), 0);
+    const remaining = (Number(c.purchased_ml) || 0) - used;
+    return { ...c, used, remaining, low: remaining <= (Number(c.min_ml) || 0), stockValue: remaining * pricePerBase(c) };
+  });
+  const lowCount = inventory.filter((i) => i.low).length;
+  const totalStockValue = inventory.reduce((s, c) => s + c.stockValue, 0);
+  const equipIssuedQty = (equipId) => equipHandouts.filter((h) => h.equipment_id === equipId && h.status === "with_tech").reduce((s, h) => s + (Number(h.qty) || 0), 0);
+  const totalEquipValue = equipment.reduce((s, e) => s + equipIssuedQty(e.id) * (Number(e.price) || 0), 0);
+
+  const activeJobs = jobs.filter((j) => j.status !== "done" && j.status !== "canceled");
+  const doneJobs = jobs.filter((j) => j.status === "done");
+  const canceledJobs = jobs.filter((j) => j.status === "canceled");
+  const q = search.trim().toLowerCase();
+  const qDigits = q.replace(/\D/g, "");
+  function matchSearch(j) {
+    if (techFilter && j.assigned_to !== techFilter) return false;
+    if (!q) return true;
+    const phoneDigits = (j.client_phone || "").replace(/\D/g, "");
+    if (qDigits && phoneDigits.includes(qDigits)) return true;
+    return norm(j.address).includes(q) || norm(j.pest).includes(q) || norm(j.client_phone).includes(q);
+  }
+  const statusMatched = statusFilter === "all" ? activeJobs : activeJobs.filter((j) => j.status === statusFilter);
+  const filteredActive = statusMatched.filter(matchSearch).filter((j) => dateInFilter(j.scheduled_date, jobsDateFilter));
+  const sorted = [...filteredActive].sort((a, b) => jobTime(a) - jobTime(b));
+  const groups = groupByDate(sorted);
+  const doneFiltered = doneJobs.filter(matchSearch).filter((j) => dateInFilter(j.scheduled_date, doneDateFilter));
+  const doneSorted = [...doneFiltered].sort((a, b) => {
+    const da = new Date(a.scheduled_date || a.reported_at || 0).getTime();
+    const db = new Date(b.scheduled_date || b.reported_at || 0).getTime();
+    return doneSortDir === "desc" ? db - da : da - db;
+  });
+  const doneGroups = groupByDate(doneSorted);
+  const canceledFiltered = canceledJobs.filter((j) => dateInFilter(j.scheduled_date, canceledDateFilter));
+  const myOpenTasks = tasks.filter((t) => t.assignee_id === session.user.id && t.status !== "done").length;
+  const allOpenTasks = tasks.filter((t) => t.status !== "done").length;
+  const todayIsoT = new Date().toISOString().slice(0, 10);
+  const tenderOverdue = tenderServices.filter((s) => !s.done && s.due_date && s.due_date < todayIsoT).length;
+  const activeTenders = tenders.filter((t) => t.status !== "closed" && t.status !== "lost").length;
+  const leadStageById = (id) => leadStages.find((s) => s.id === id);
+  const activeLeads = leads.filter((l) => { const st = leadStageById(l.stage_id); return !l.converted_job_id && !(st && st.is_lost); }).length;
+  const servicesOf = (tid) => tenderServices.filter((s) => s.tender_id === tid).sort((a, b) => a.seq - b.seq);
+  const guaranteesOf = (tid) => tenderGuarantees.filter((g) => g.tender_id === tid);
+  const visibleTasks = canManageTasks ? tasks : tasks.filter((t) => t.assignee_id === session.user.id);
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const filteredTasks = visibleTasks.filter((t) => {
+    if (taskAssignee && t.assignee_id !== taskAssignee) return false;
+    if (taskFilter === "open") return t.status !== "done";
+    if (taskFilter === "today") return t.status !== "done" && t.due_date === todayIso;
+    if (taskFilter === "overdue") return t.status !== "done" && t.due_date && t.due_date < todayIso;
+    if (taskFilter === "done") return t.status === "done";
+    return true;
+  }).sort((a, b) => {
+    const rank = (t) => (t.status === "done" ? 2 : (t.due_date && t.due_date < todayIso ? 0 : 1));
+    if (rank(a) !== rank(b)) return rank(a) - rank(b);
+    return (a.due_date || "9999").localeCompare(b.due_date || "9999");
+  });
+  const tomorrow = parseIso(todayIso); tomorrow.setDate(tomorrow.getDate() + 1); const tomorrowIso = isoOf(tomorrow);
+  const visibleForToday = (j) => canEditJobs || j.assigned_to === session.user.id;
+  const todayJobs = jobs.filter((j) => j.scheduled_date === todayIso && j.status !== "canceled" && visibleForToday(j)).sort((a, b) => jobTime(a) - jobTime(b));
+  const todayDone = todayJobs.filter((j) => j.status === "done");
+  const todayActive = todayJobs.filter((j) => j.status !== "done");
+  const todayRevenue = todayDone.reduce((s, j) => s + (Number(j.report_paid) || 0), 0);
+  const todayProfit = todayDone.reduce((s, j) => s + jobEconomics(j).profit, 0);
+  const todayPlan = todayJobs.reduce((s, j) => s + Math.max(0, ...(j.price_options || []).map((p) => Number(p.amount) || 0)), 0);
+  const totalReceivables = doneJobs.filter((j) => Number(j.report_transfer) > 0 && !j.transfer_paid).reduce((s, j) => s + (Number(j.report_transfer) || 0), 0);
+  const enRouteNow = activeJobs.filter((j) => jobWorkStage(j) === "en_route").length;
+  const onSiteNow = activeJobs.filter((j) => jobWorkStage(j) === "on_site").length;
+  const proofMissingToday = todayDone.filter((j) => !proofIsComplete(j.id)).length;
+  const overdueJobs = activeJobs.filter((j) => j.scheduled_date && j.scheduled_date < todayIso && visibleForToday(j));
+  const unassignedSoon = isAdmin ? activeJobs.filter((j) => !j.assigned_to && !j.executor_partner_id && j.scheduled_date && j.scheduled_date <= tomorrowIso) : [];
+  const overdueTaskList = visibleTasks.filter((t) => t.status !== "done" && t.due_date && t.due_date < todayIso);
+  const pendingDeposits = isAdmin ? deposits.filter((d) => d.status === "pending") : [];
+  const completedEconomics = doneJobs.map((job) => ({ job, econ: jobEconomics(job) }));
+  const totalJobProfit = completedEconomics.reduce((s, r) => s + r.econ.profit, 0);
+  const totalJobRevenue = completedEconomics.reduce((s, r) => s + r.econ.revenue, 0);
+  const averageJobMargin = totalJobRevenue > 0 ? Math.round(totalJobProfit / totalJobRevenue * 100) : 0;
+  const lossJobs = completedEconomics.filter((r) => r.econ.profit < 0);
+  const lostRevenue = canceledJobs.reduce((s, j) => s + Math.max(0, ...(j.price_options || []).map((p) => Number(p.amount) || 0)), 0);
+  const openFollowups = followups.filter((f) => f.status !== "done");
+  const dueFollowups = openFollowups.filter((f) => f.due_date && f.due_date <= todayIso);
+  const qualityByJob = (jobId) => qualityChecks.find((q) => q.job_id === jobId);
+  const qualityPending = doneJobs.filter((j) => !qualityByJob(j.id) && daysSince(j.reported_at || j.scheduled_date) >= 1);
+  const qualityProblems = qualityChecks.filter((q) => q.status === "problem" || q.result === "complaint");
+  const overdueTransfers = doneJobs.filter((j) => Number(j.report_transfer) > 0 && !j.transfer_paid && daysSince(j.reported_at || j.scheduled_date) >= 3);
+  const recentLowFeedback = publicFeedback.filter((f) => Number(f.rating) <= 3 && daysSince(f.created_at) <= 14);
+  const activeContracts = contracts.filter((c) => c.active !== false);
+  const dueContracts = activeContracts.filter((c) => c.next_service_date && c.next_service_date <= todayIso);
+  const upsellCandidates = doneJobs.filter((j) => daysSince(j.reported_at || j.scheduled_date) <= 120 && !followups.some((f) => f.job_id === j.id && f.kind === "upsell")).slice(0, 20);
+  const ratingMonthStart = new Date(); ratingMonthStart.setDate(1); ratingMonthStart.setHours(0, 0, 0, 0); const ratingStartIso = isoOf(ratingMonthStart);
+  const ratingJobs = jobs.filter((j) => (j.scheduled_date || "") >= ratingStartIso);
+  const sourceRatingMap = {};
+  ratingJobs.forEach((j) => {
+    const label = (j.source || "Не указан").trim() || "Не указан"; const key = norm(label);
+    if (!sourceRatingMap[key]) sourceRatingMap[key] = { key, label, total: 0, done: 0, canceled: 0, revenue: 0, profit: 0, spent: 0 };
+    const row = sourceRatingMap[key]; row.total++; if (j.status === "canceled") row.canceled++;
+    if (j.status === "done") { row.done++; row.revenue += Number(j.report_paid) || 0; row.profit += jobEconomics(j).profit; }
+  });
+  mktChannels.forEach((ch) => { const key = norm(ch.source_key); if (!key || !sourceRatingMap[key]) return; sourceRatingMap[key].spent += mktTopups.filter((t) => t.channel_id === ch.id && t.topup_date >= ratingStartIso).reduce((s, t) => s + (Number(t.amount) || 0), 0); });
+  const sourceRatings = Object.values(sourceRatingMap).map((r) => ({ ...r, conversion: r.total ? Math.round(r.done / r.total * 100) : 0, avgCheck: r.done ? Math.round(r.revenue / r.done) : 0, roi: r.spent > 0 ? r.revenue / r.spent : null })).sort((a, b) => b.profit - a.profit);
+  const managerRatingMap = {};
+  ratingJobs.forEach((j) => {
+    const id = j.created_by || "unknown"; const label = profileById(id)?.full_name || "Не указан";
+    if (!managerRatingMap[id]) managerRatingMap[id] = { id, label, total: 0, done: 0, canceled: 0, revenue: 0, profit: 0 };
+    const row = managerRatingMap[id]; row.total++; if (j.status === "canceled") row.canceled++;
+    if (j.status === "done") { row.done++; row.revenue += Number(j.report_paid) || 0; row.profit += jobEconomics(j).profit; }
+  });
+  const managerRatings = Object.values(managerRatingMap).map((r) => ({ ...r, conversion: r.total ? Math.round(r.done / r.total * 100) : 0, avgCheck: r.done ? Math.round(r.revenue / r.done) : 0 })).sort((a, b) => b.profit - a.profit);
+  const dashboardAlerts = [
+    overdueJobs.length ? { id: "overdue-jobs", label: "Просроченные заявки", value: overdueJobs.length, tab: "jobs", tone: "danger" } : null,
+    unassignedSoon.length ? { id: "unassigned", label: "Не назначены на сегодня/завтра", value: unassignedSoon.length, tab: "jobs", tone: "warning" } : null,
+    overdueTaskList.length ? { id: "tasks", label: "Просроченные задачи", value: overdueTaskList.length, tab: "tasks", tone: "danger" } : null,
+    pendingDeposits.length ? { id: "cash", label: "Наличка ждёт подтверждения", value: pendingDeposits.length, tab: "cash", tone: "warning" } : null,
+    isAdmin && lowCount ? { id: "stock", label: "Заканчиваются препараты", value: lowCount, tab: "stock", tone: "danger" } : null,
+    isAdmin && tenderOverdue ? { id: "tenders", label: "Просрочены работы по тендерам", value: tenderOverdue, tab: "tenders", tone: "danger" } : null,
+    isAdmin && dueFollowups.length ? { id: "client-followups", label: "Пора связаться с клиентами", value: dueFollowups.length, tab: "retention", tone: "warning" } : null,
+    isAdmin && qualityPending.length ? { id: "quality", label: "Ждут контроля качества", value: qualityPending.length, tab: "retention", tone: "warning" } : null,
+    isAdmin && dueContracts.length ? { id: "contracts", label: "Пора создать плановые выезды", value: dueContracts.length, tab: "subscriptions", tone: "danger" } : null,
+    isAdmin && overdueTransfers.length ? { id: "transfers", label: "Оплата просрочена более 3 дней", value: overdueTransfers.length, tab: "done", tone: "danger" } : null,
+    isAdmin && qualityProblems.length ? { id: "complaints", label: "Есть проблемы по качеству", value: qualityProblems.length, tab: "retention", tone: "danger" } : null,
+    isAdmin && recentLowFeedback.length ? { id: "low-feedback", label: "Низкие оценки клиентов за 14 дней", value: recentLowFeedback.length, tab: "retention", tone: "danger" } : null,
+  ].filter(Boolean);
+  const ownerSummaryText = [
+    `KazDez · ${isoToRu(todayIso)}`,
+    `Заявки: ${todayJobs.length}, выполнено ${todayDone.length}`,
+    `Выручка: ${fmt(todayRevenue)} ₸`,
+    `Прибыль: ${fmt(todayProfit)} ₸`,
+    `Ожидаем оплату: ${fmt(totalReceivables)} ₸`,
+    `В пути: ${enRouteNow}, на объектах: ${onSiteNow}`,
+    `Требуют внимания: ${dashboardAlerts.length}`,
+    proofMissingToday ? `Без полного подтверждения: ${proofMissingToday}` : "Все выполненные работы подтверждены",
+  ].join("\n");
+  const globalQ = globalSearch.trim().toLowerCase();
+  const globalDigits = globalQ.replace(/\D/g, "");
+  const includesGlobal = (...parts) => {
+    const text = norm(parts.filter(Boolean).join(" "));
+    const digits = parts.join(" ").replace(/\D/g, "");
+    return !!globalQ && (text.includes(globalQ) || (globalDigits.length >= 3 && digits.includes(globalDigits)));
+  };
+  const globalResults = globalQ ? [
+    ...jobs.filter((j) => includesGlobal(j.id, j.client_phone, j.contact_name, j.address, j.pest)).slice(0, 6).map((j) => ({ kind: "job", id: j.id, label: `${j.pest || "Заявка"} · ${j.client_phone || "без телефона"}`, meta: `${addressPlain(j.address)} · ${isoToRu(j.scheduled_date) || "без даты"}`, item: j })),
+    ...(isAdmin ? leads.filter((l) => includesGlobal(l.name, l.phone, l.address)).slice(0, 4).map((l) => ({ kind: "lead", id: l.id, label: l.name || l.phone || "Клиент", meta: `Клиент · ${l.phone || l.address || ""}`, item: l })) : []),
+    ...(isAdmin ? tenders.filter((t) => includesGlobal(t.contract_no, t.customer, t.title, t.address)).slice(0, 3).map((t) => ({ kind: "tender", id: t.id, label: t.customer || t.title || "Тендер", meta: `Тендер · ${t.contract_no || t.address || ""}`, item: t })) : []),
+    ...(isAdmin ? partners.filter((p) => includesGlobal(p.name)).slice(0, 3).map((p) => ({ kind: "partner", id: p.id, label: p.name, meta: "Партнёр", item: p })) : []),
+    ...(isAdmin ? chemicals.filter((c) => includesGlobal(c.name)).slice(0, 3).map((c) => ({ kind: "chemical", id: c.id, label: c.name, meta: "Склад · препарат", item: c })) : []),
+    ...(isAdmin ? allProfiles.filter((p) => includesGlobal(p.full_name, p.phone)).slice(0, 3).map((p) => ({ kind: "profile", id: p.id, label: p.full_name || p.phone || "Сотрудник", meta: "Сотрудник", item: p })) : []),
+  ].slice(0, 12) : [];
+  function openGlobalResult(result) {
+    setGlobalSearch(""); setGlobalSearchOpen(false);
+    if (result.kind === "job") { setTab(result.item.status === "done" ? "done" : result.item.status === "canceled" ? "canceled" : "jobs"); setModal(result.item.status === "done" ? { kind: "view", job: result.item } : { kind: "edit", job: result.item }); }
+    if (result.kind === "lead") setModal({ kind: "lead", lead: result.item });
+    if (result.kind === "tender") setModal({ kind: "tender", tender: result.item });
+    if (result.kind === "partner") setModal({ kind: "partnerJobs", partner: result.item });
+    if (result.kind === "chemical") setTab("stock");
+    if (result.kind === "profile") setTab("team");
+  }
+  const baseTabs = [
+    { id: "today", icon: LayoutDashboard, label: `Командный центр${dashboardAlerts.length ? " · " + dashboardAlerts.length : ""}` },
+    { id: "jobs", icon: ClipboardList, label: `Заявки${activeJobs.length ? " · " + activeJobs.length : ""}` },
+    { id: "schedule", icon: CalendarClock, label: "График" },
+    { id: "done", icon: CheckCircle2, label: `Выполненные${doneJobs.length ? " · " + doneJobs.length : ""}` },
+    { id: "canceled", icon: XCircle, label: `Отменённые${canceledJobs.length ? " · " + canceledJobs.length : ""}` },
+    { id: "tasks", icon: ListTodo, label: `Задачи${allOpenTasks ? " · " + allOpenTasks : ""}` },
+    { id: "leads", icon: Contact, label: `Клиенты${activeLeads ? " · " + activeLeads : ""}` },
+    { id: "tenders", icon: Gavel, label: `Тендеры${tenderOverdue ? " · ⚠ " + tenderOverdue : (activeTenders ? " · " + activeTenders : "")}` },
+    { id: "repeats", icon: RefreshCw, label: `Повторы${jobs.filter((j) => j.repeat_state === "on_repeat").length ? " · " + jobs.filter((j) => j.repeat_state === "on_repeat").length : ""}` },
+    { id: "retention", icon: ClipboardCheck, label: `Касания${dueFollowups.length || qualityPending.length ? " · " + (dueFollowups.length + qualityPending.length) : ""}` },
+    { id: "subscriptions", icon: Repeat2, label: `Абоненты${dueContracts.length ? " · " + dueContracts.length : ""}` },
+    { id: "routes", icon: Route, label: "Маршруты" },
+    { id: "growth", icon: TrendingUp, label: `Прибыль и KPI${lossJobs.length ? " · ⚠ " + lossJobs.length : ""}` },
+    { id: "finance", icon: Wallet, label: "Аналитика" },
+    { id: "opex", icon: Landmark, label: "Финансы" },
+    { id: "cash", icon: Banknote, label: `Касса${deposits.filter((d) => d.status === "pending").length ? " · " + deposits.filter((d) => d.status === "pending").length : ""}` },
+    { id: "stock", icon: Package, label: `Склад${lowCount ? " · " + lowCount + " мало" : ""}` },
+    { id: "team", icon: Users, label: "Команда и доступы" },
+    { id: "partners", icon: Handshake, label: "Партнёры" },
+    { id: "docs", icon: FileText, label: "Документы" },
+    { id: "materials", icon: FolderOpen, label: "Материалы" },
+    { id: "knowledge", icon: GraduationCap, label: "База знаний" },
+    { id: "journal", icon: History, label: "Журнал" },
+    { id: "trash", icon: Trash2, label: `Корзина${trash.length ? " · " + trash.length : ""}` },
+    { id: "myequip", icon: Wrench, label: "Моё оборудование" },
+  ].filter((item) => isAdmin ? item.id !== "myequip" : canAccess(`tab.${item.id}`));
+  // применяем сохранённый общий порядок (админ задаёт в Настройках). Новые вкладки — в конец.
+  const savedOrder = Array.isArray(settings.tab_order) ? settings.tab_order : [];
+  const tabs = savedOrder.length
+    ? [...baseTabs].sort((a, b) => {
+        const ia = savedOrder.indexOf(a.id), ib = savedOrder.indexOf(b.id);
+        return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+      })
+    : baseTabs;
+  const navGroups = [
+    { label: "Работа", ids: ["today", "jobs", "schedule", "routes", "tasks"] },
+    { label: "Клиенты", ids: ["leads", "retention", "subscriptions", "repeats"] },
+    { label: "Результаты", ids: ["done", "canceled", "growth", "finance"] },
+    { label: "Учёт", ids: ["opex", "cash", "stock", "myequip"] },
+    { label: "Команда", ids: ["team", "partners"] },
+  ];
+  const moreNavGroup = { label: "Ещё разделы", ids: ["tenders", "docs", "materials", "knowledge", "journal", "trash"] };
+  const mobileTabIds = (isAdmin ? ["today", "jobs", "leads", "routes"] : ["today", "jobs", "tasks", "cash", "tenders", "finance"]).filter((id) => tabs.some((item) => item.id === id)).slice(0, 4);
+  const mobileTabs = mobileTabIds.map((id) => tabs.find((item) => item.id === id)).filter(Boolean);
+
+  return (
+    <div className={`kd-app ${sideOpen ? "side-open" : ""}`}>
+      <div className="kd-scrim" onClick={() => setSideOpen(false)} />
+      <aside className="kd-side">
+        <div className="kd-hazard" />
+        <div className="kd-brand">
+          <div className="kd-logo"><Bug size={19} strokeWidth={2.4} /></div>
+          <div><div className="kd-brand-name">KazDez</div><div className="kd-brand-sub">{ROLE_DEFINITIONS[profile?.role]?.label || "Сотрудник"} · {actorName}</div></div>
+        </div>
+        <nav className="kd-tabs">
+          {navGroups.map((group) => {
+            const groupTabs = tabs.filter((item) => group.ids.includes(item.id));
+            if (!groupTabs.length) return null;
+            return <div className="kd-navgroup" key={group.label}>
+              <div className="kd-navlabel">{group.label}</div>
+              {groupTabs.map((t) => (<button key={t.id} className={`kd-tab ${tab === t.id ? "on" : ""}`} onClick={() => { setTab(t.id); setSideOpen(false); }}>{t.icon ? <t.icon size={17} /> : null}<span className="kd-tab-lbl">{t.label}</span></button>))}
+            </div>;
+          })}
+          {tabs.some((item) => moreNavGroup.ids.includes(item.id)) && <div className="kd-navgroup kd-navgroup-more">
+            <button className={`kd-navmore ${moreNavOpen ? "on" : ""}`} onClick={() => { const next = !moreNavOpen; setMoreNavOpen(next); localStorage.setItem("kd-more-nav", next ? "1" : "0"); }}>
+              <Menu size={16} /><span>Ещё разделы</span><ChevronRight size={15} />
+            </button>
+            {moreNavOpen && <div className="kd-navmore-list">{tabs.filter((item) => moreNavGroup.ids.includes(item.id)).map((t) => (
+              <button key={t.id} className={`kd-tab ${tab === t.id ? "on" : ""}`} onClick={() => { setTab(t.id); setSideOpen(false); }}>{t.icon ? <t.icon size={17} /> : null}<span className="kd-tab-lbl">{t.label}</span></button>
+            ))}</div>}
+          </div>}
+        </nav>
+        <div className="kd-navfoot">
+          <div className={`kd-connection ${online ? "online" : "offline"}`}>{online ? <Wifi size={14} /> : <WifiOff size={14} />}<span>{online ? `На связи${lastLoadedAt ? ` · ${lastLoadedAt.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}` : ""}` : "Нет подключения"}</span></div>
+          {canAccess("action.settings") && <button className="kd-tab" onClick={() => { setModal({ kind: "settings" }); setSideOpen(false); }}><Settings size={17} /><span className="kd-tab-lbl">Настройки</span></button>}
+          <button className="kd-tab" onClick={() => supabase.auth.signOut()}><LogOut size={17} /><span className="kd-tab-lbl">Выйти</span></button>
+        </div>
+      </aside>
+
+      <div className="kd-mainwrap">
+        <header className="kd-topbar">
+          <div className="kd-topleft">
+            <button className="kd-burger" onClick={() => setSideOpen((v) => !v)} aria-label="Меню"><ClipboardList size={18} /></button>
+            <h1 className="kd-pagetitle">{tab === "today" ? (isAdmin ? "Командный центр" : "Мой день") : (tabs.find((t) => t.id === tab) || {}).label || TAB_LABELS[tab] || ""}</h1>
+          </div>
+          <div className="kd-globalsearch" onBlur={() => setTimeout(() => setGlobalSearchOpen(false), 120)}>
+            <Search size={16} />
+            <input value={globalSearch} onFocus={() => setGlobalSearchOpen(true)} onChange={(e) => { setGlobalSearch(e.target.value); setGlobalSearchOpen(true); }} onKeyDown={(e) => e.key === "Escape" && setGlobalSearchOpen(false)} placeholder="Найти клиента, заявку, тендер…" />
+            {globalSearch && <button onClick={() => setGlobalSearch("")} aria-label="Очистить"><X size={14} /></button>}
+            {globalSearchOpen && globalQ && <div className="kd-globalresults">
+              {globalResults.length === 0 && <div className="kd-globalempty">Ничего не найдено</div>}
+              {globalResults.map((r) => <button key={`${r.kind}-${r.id}`} onMouseDown={(e) => e.preventDefault()} onClick={() => openGlobalResult(r)}>
+                <span>{r.label}</span><small>{r.meta}</small>
+              </button>)}
+            </div>}
+          </div>
+          <div className="kd-tabactions">
+            {installPrompt && <button className="kd-btn ghost kd-installbtn" onClick={installApplication}><Smartphone size={15} />Установить</button>}
+            {offlineQueued > 0 && <button className="kd-btn ghost kd-syncbtn" disabled={!online || syncingOffline} onClick={syncOfflineQueue}><CloudUpload size={15} />{syncingOffline ? "Синхронизация…" : `Офлайн · ${offlineQueued}`}</button>}
+            <div className="kd-notifications" onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setNotificationOpen(false); }}>
+              <button className={`kd-iconbtn kd-bell ${unreadNotifications.length ? "has-new" : ""}`} onClick={() => setNotificationOpen((value) => !value)} title="Уведомления" aria-label="Уведомления">{unreadNotifications.length ? <BellRing size={17} /> : <Bell size={17} />}{unreadNotifications.length > 0 && <span>{unreadNotifications.length > 99 ? "99+" : unreadNotifications.length}</span>}</button>
+              {notificationOpen && <div className="kd-notification-panel">
+                <div className="kd-notification-head"><div><strong>Уведомления</strong><span>{unreadNotifications.length ? `${unreadNotifications.length} непрочитано` : "Всё прочитано"}</span></div>{unreadNotifications.length > 0 && <button onClick={markAllNotificationsRead}>Прочитать все</button>}</div>
+                <div className="kd-notification-list">{notifications.length === 0 ? <div className="kd-globalempty">Новых уведомлений нет</div> : notifications.slice(0, 30).map((item) => <button key={item.id} className={`${item.read_at ? "read" : ""} ${item.priority || "normal"}`} onClick={() => openNotification(item)}><span className="kd-notification-dot" /><span><strong>{item.title}</strong><small>{item.body}</small><time>{fmtTs(item.created_at)}</time></span><ChevronRight size={15} /></button>)}</div>
+              </div>}
+            </div>
+            {(tab === "jobs" || tab === "today") && canEditJobs && <button className="kd-btn primary" onClick={() => setModal({ kind: "new" })}><Plus size={15} />Новая заявка</button>}
+            {tab === "subscriptions" && canEditJobs && <button className="kd-btn primary" onClick={() => setModal({ kind: "contract" })}><Plus size={15} />Абонент</button>}
+            {tab === "retention" && canEditJobs && <button className="kd-btn primary" onClick={() => setModal({ kind: "followup" })}><Plus size={15} />Касание</button>}
+            {tab === "stock" && canAccess("action.stock_edit") && <button className="kd-btn primary" onClick={() => setModal({ kind: "addchem" })}><Plus size={15} />Препарат</button>}
+            {tab === "partners" && canEditPartners && <button className="kd-btn primary" onClick={() => setModal({ kind: "partner" })}><Plus size={15} />Партнёр</button>}
+            {tab === "docs" && canEditDocs && <button className="kd-btn primary" onClick={() => setModal({ kind: "doc" })}><Plus size={15} />Документ</button>}
+            {tab === "opex" && canManageCash && <button className="kd-btn primary" onClick={() => setModal({ kind: "opex" })}><Plus size={15} />Расход</button>}
+            {canAccess(`tab.${tab}`) && ["growth", "finance", "journal"].includes(tab) && <button className="kd-btn ghost" onClick={exportExcel}><Download size={15} />Excel</button>}
+            <button className="kd-iconbtn" disabled={loading} onClick={load} title="Обновить данные" aria-label="Обновить данные"><RefreshCw size={16} /></button>
+          </div>
+        </header>
+
+        <nav className="kd-mobile-nav" aria-label="Основная навигация">
+          {mobileTabs.map((item) => <button key={item.id} className={tab === item.id ? "on" : ""} onClick={() => setTab(item.id)}>{item.icon ? <item.icon size={19} /> : null}<span>{item.id === "today" ? (isAdmin ? "Центр" : "Мой день") : TAB_LABELS[item.id] || item.id}</span></button>)}
+          <button onClick={() => setSideOpen(true)}><Menu size={19} /><span>Ещё</span></button>
+        </nav>
+
+      <main className="kd-main">
+
+        {loading && <div className="kd-empty">Загрузка…</div>}
+        {!loading && isAdmin && dataWarnings.length > 0 && <details className="kd-systemwarning"><summary><AlertTriangle size={17} />Не все данные загрузились · {dataWarnings.length}</summary><div>{dataWarnings.map((warning) => <span key={warning}>{warning}</span>)}<button className="kd-btn ghost sm" onClick={load}>Повторить загрузку</button></div></details>}
+
+        {!loading && tab === "today" && (
+          <div className="kd-today">
+            <section className="kd-todayhero">
+              <div>
+                <div className="kd-eyebrow">{WEEKDAYS[new Date().getDay()]} · {isoToRu(todayIso)}</div>
+                <h2>{isAdmin ? (dashboardAlerts.length ? `${dashboardAlerts.length} решений требуют внимания` : "Компания работает по плану") : (todayActive.length ? `Сегодня ${todayActive.length} выезд.` : "На сегодня активных выездов нет")}</h2>
+                <p>{todayJobs.length ? `Всего ${todayJobs.length}, выполнено ${todayDone.length}. ${isAdmin ? `План дня — ${fmt(todayPlan)} ₸.` : "Следующий шаг виден в каждой заявке."}` : "Можно заняться задачами и подготовкой следующих выездов."}</p>
+              </div>
+              <div className="kd-todayhero-actions">
+                {canEditJobs && <button className="kd-btn primary" onClick={() => setModal({ kind: "new" })}><Plus size={15} />Новая заявка</button>}
+                {canAccess("tab.schedule") && <button className="kd-btn ghost" onClick={() => setTab("schedule")}><CalendarClock size={15} />Открыть график</button>}
+                {canAccess("tab.routes") && todayJobs.length > 0 && <button className="kd-btn ghost" onClick={() => setTab("routes")}><Route size={15} />Маршруты дня</button>}
+              </div>
+            </section>
+
+            <section className="kd-kpigrid">
+              <button onClick={() => setTab("jobs")}><span>Заявок сегодня</span><strong>{todayJobs.length}</strong><small>{todayActive.length} ещё в работе</small></button>
+              <button onClick={() => setTab("done")}><span>Выполнено</span><strong>{todayDone.length}</strong><small>{todayJobs.length ? Math.round(todayDone.length / todayJobs.length * 100) : 0}% плана по количеству</small></button>
+              {isAdmin ? <button onClick={() => setTab("finance")}><span>Выручка сегодня</span><strong>{fmt(todayRevenue)} ₸</strong><small>план по заявкам {fmt(todayPlan)} ₸</small></button> : <button onClick={() => setTab("tasks")}><span>Мои задачи</span><strong>{myOpenTasks}</strong><small>{overdueTaskList.length} просрочено</small></button>}
+              <button onClick={() => dashboardAlerts[0] && setTab(dashboardAlerts[0].tab)}><span>Требуют внимания</span><strong className={dashboardAlerts.length ? "danger" : "ok"}>{dashboardAlerts.length}</strong><small>{dashboardAlerts.length ? "открой список ниже" : "всё под контролем"}</small></button>
+            </section>
+
+            {isAdmin && <section className="kd-ownerpulse">
+              <div className="kd-ownerpulse-head"><div><div className="kd-eyebrow">Пульс компании</div><div className="kd-title">Сводка владельца</div><p>Деньги, поле и контроль — без переходов между разделами.</p></div><button className="kd-btn ghost sm" onClick={() => copyText(ownerSummaryText, () => showToast("Сводка скопирована"))}>Скопировать сводку</button></div>
+              <div className="kd-ownerpulse-grid"><button onClick={() => setTab("finance")}><span>Прибыль сегодня</span><strong className={todayProfit < 0 ? "danger" : ""}>{fmt(todayProfit)} ₸</strong><small>выручка {fmt(todayRevenue)} ₸</small></button><button onClick={() => setTab("done")}><span>Ожидаем оплату</span><strong>{fmt(totalReceivables)} ₸</strong><small>{overdueTransfers.length} просрочено</small></button><button onClick={() => setTab("routes")}><span>Сейчас в поле</span><strong>{enRouteNow + onSiteNow}</strong><small>{enRouteNow} в пути · {onSiteNow} на объекте</small></button><button onClick={() => setTab("done")}><span>Подтверждение работ</span><strong className={proofMissingToday ? "danger" : "ok"}>{proofMissingToday}</strong><small>{proofMissingToday ? "не заполнено сегодня" : "всё заполнено"}</small></button></div>
+            </section>}
+
+            <section className="kd-todaysection">
+              <div className="kd-todaysection-head"><div><div className="kd-title">{isAdmin ? "SLA и решения" : "Требуют внимания"}</div><div className="kd-muted">{isAdmin ? "Автоматически рассчитанные просрочки, риски и контрольные точки" : "Только то, что нужно решить сейчас"}</div></div></div>
+              {dashboardAlerts.length === 0 ? <div className="kd-allgood"><CheckCircle2 size={20} />Критичных предупреждений нет</div> : <div className="kd-alertgrid">
+                {dashboardAlerts.map((a) => <button key={a.id} className={a.tone} onClick={() => setTab(a.tab)}><AlertTriangle size={18} /><span>{a.label}</span><strong>{a.value}</strong><ArrowRight size={16} /></button>)}
+              </div>}
+            </section>
+
+            <section className="kd-todaysection">
+              <div className="kd-todaysection-head"><div><div className="kd-title">Заявки на сегодня</div><div className="kd-muted">По времени, от ближайшей к поздней</div></div><button className="kd-btn ghost sm" onClick={() => setTab("jobs")}>Все заявки <ArrowRight size={14} /></button></div>
+              {todayJobs.length === 0 ? <div className="kd-empty">На сегодня заявок нет.</div> : <div className="kd-todayjobs">
+                {todayJobs.map((j) => {
+                  const phone = String(j.client_phone || "").replace(/\D/g, "");
+                  const directMap = yandexMapUrl(j.address);
+                  const late = j.status !== "done" && Number.isFinite(jobTime(j)) && jobTime(j) < Date.now();
+                  const stageKey = jobWorkStage(j); const stage = WORK_STAGE[stageKey];
+                  return <div className={`kd-todayjob ${j.status === "done" ? "done" : ""} ${late ? "late" : ""}`} key={j.id}>
+                    <div className="kd-todaytime">{j.scheduled_time || "—"}</div>
+                    <div className="kd-todayjobmain">
+                      <strong>{j.pest || "Заявка"}</strong><span>{addressPlain(j.address) || "Адрес не указан"}</span>{partnerNameOf(j) && <span className="kd-todaypartner"><Handshake size={12} />Партнёр: <b>{partnerNameOf(j)}</b></span>}<small><b style={{ color: stage.color }}>{stage.short}</b> · {techById(j.assigned_to)?.full_name || (j.executor_partner_id ? partnerById(j.executor_partner_id)?.name : "Не назначен")}</small>
+                    </div>
+                    <div className="kd-todayjobactions">
+                      {phone && <a href={`tel:+${phone}`} title="Позвонить"><Phone size={16} /></a>}
+                      {phone && <a className="wa" href={roleWhatsappUrl(j, isAdmin)} target="_blank" rel="noreferrer" title="WhatsApp"><MessageCircle size={16} /></a>}
+                      {j.address && <a href={directMap} target="_blank" rel="noreferrer" title="Открыть в Яндекс Картах"><MapPin size={16} /></a>}
+                      <button onClick={() => openJobProof(j)} title="Фото, геолокация и подпись"><Camera size={16} />{proofIsComplete(j.id) ? "✓" : ""}</button>
+                      {isFieldTech && j.status !== "done" && j.status !== "canceled" && ["new", "confirmed", "assigned"].includes(stageKey) && <button className="primary" onClick={() => setJobWorkStage(j, "en_route")}>В путь</button>}
+                      {isFieldTech && stageKey === "en_route" && <button className="primary" onClick={() => setJobWorkStage(j, "on_site")}>На объекте</button>}
+                      {isFieldTech && stageKey === "on_site" && <button className="primary" onClick={() => setModal({ kind: "report", job: j })}>Отчёт</button>}
+                      <button onClick={() => setModal(j.status === "done" ? { kind: "view", job: j } : canEditJobs ? { kind: "edit", job: j } : { kind: "details", job: j })}>{j.status === "done" ? "Отчёт" : "Открыть"}</button>
+                    </div>
+                  </div>;
+                })}
+              </div>}
+            </section>
+
+            <section className="kd-todaysection">
+              <div className="kd-todaysection-head"><div><div className="kd-title">Ближайшие задачи</div><div className="kd-muted">На сегодня и просроченные</div></div><button className="kd-btn ghost sm" onClick={() => setTab("tasks")}>Все задачи <ArrowRight size={14} /></button></div>
+              {visibleTasks.filter((t) => t.status !== "done" && t.due_date && t.due_date <= todayIso).length === 0 ? <div className="kd-allgood"><CheckCircle2 size={20} />Срочных задач нет</div> : <div className="kd-todaytasks">
+                {visibleTasks.filter((t) => t.status !== "done" && t.due_date && t.due_date <= todayIso).sort((a, b) => String(a.due_date).localeCompare(String(b.due_date))).slice(0, 6).map((t) => <button key={t.id} className={t.due_date < todayIso ? "overdue" : ""} onClick={() => setModal({ kind: "task", task: t })}><span>{t.title}</span><small>{t.due_date < todayIso ? `Просрочено · ${isoToRu(t.due_date)}` : "Сегодня"} · {personName(t.assignee_id)}</small><ArrowRight size={15} /></button>)}
+              </div>}
+            </section>
+          </div>
+        )}
+
+        {!loading && (tab === "jobs" || tab === "done") && (
+          <div className="kd-searchrow">
+            <div className="kd-searchbar">
+              <Search size={16} className="kd-search-icon" />
+              <input className="kd-search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Поиск по телефону, адресу или виду вредителя…" />
+              {search && <button className="kd-x" onClick={() => setSearch("")}><X size={15} /></button>}
+            </div>
+            {canEditJobs && techs.length > 0 && (
+              <select className="kd-techselect" value={techFilter} onChange={(e) => setTechFilter(e.target.value)}>
+                <option value="">Все дезинфекторы</option>
+                {techs.map((t) => <option key={t.id} value={t.id}>{t.full_name || t.id.slice(0, 6)}</option>)}
+              </select>
+            )}
+          </div>
+        )}
+
+        {!loading && tab === "jobs" && (
+          <>
+            {canEditJobs && (
+              <div className="kd-seg" style={{ marginBottom: 14 }}>
+                {[{ id: "all", label: "Все" }, { id: "new", label: "Новые" }, { id: "assigned", label: "Назначены" }].map((s) => (
+                  <button key={s.id} className={`kd-segbtn ${statusFilter === s.id ? "on" : ""}`} onClick={() => setStatusFilter(s.id)}>{s.label}</button>
+                ))}
+              </div>
+            )}
+            <DateFilterBar filter={jobsDateFilter} onChange={setJobsDateFilter} />
+            {filteredActive.length === 0 ? <div className="kd-empty">{activeJobs.length === 0 ? "Активных заявок нет — все выполнены. Загляни во вкладку «Выполненные»." : "По этому фильтру ничего не найдено."}</div> :
+              groups.map((g) => (
+                <div key={g.key} className="kd-group">
+                  <div className={`kd-datehead ${g.past ? "past" : ""}`}><span>{g.label}</span><span className="kd-datecount">{g.jobs.length}</span></div>
+                  <div className="kd-list">
+                    {g.jobs.map((j) => (
+                      <JobCard key={j.id} job={j} isAdmin={canEditJobs} onCert={() => certifyJob(j)} onAct={() => certifyAct(j)} assignedName={techById(j.assigned_to)?.full_name} partnerName={partnerNameOf(j)} partnerRepeat={j.brand === "partner" ? repeatLabel(partnerById(j.partner_id)?.repeat_policy) : ""} share={partnerShareAmt(j)}
+                        onCopy={() => copyText(buildMsg(j, brandHeaderOf(j)), () => showToast("Текст скопирован"))}
+                        onProof={() => openJobProof(j)} proofComplete={proofIsComplete(j.id)}
+                        onCopyPublicLink={() => copyPublicJobLink(j)}
+                        onStageChange={(stage) => setJobWorkStage(j, stage)}
+                        onReport={() => setModal({ kind: "report", job: j })}
+                        onAssign={() => setModal({ kind: "assign", job: j })}
+                        onView={() => setModal({ kind: "view", job: j })}
+                        onEdit={() => setModal({ kind: "edit", job: j })}
+                        onRepeat={() => askConfirm(`Отправить заявку «${j.pest} · ${j.address}» на повтор? Она уйдёт во вкладку «Повторы».`, () => putOnRepeat(j), { danger: false, confirmLabel: "Да, на повтор" })}
+                        onPayPartner={(paid) => markPartnerPaid(j, paid)}
+                        onCompPaid={(paid) => markCompPaid(j, paid)}
+                        onCancel={() => setModal({ kind: "cancelJob", job: j })}
+                        onRestore={() => restoreCanceled(j)}
+                  onTransferPaid={() => setModal({ kind: "transferPay", job: j })}
+                  onTechExtras={() => setModal({ kind: "techExtras", job: j })}
+                  executorName={partnerById(j.executor_partner_id)?.name}
+                  onExecutorDone={() => setModal({ kind: "executorDone", job: j })}
+                  onExecutorPaid={(paid) => askConfirm(paid ? `Отметить долю исполнителю выплаченной?` : `Снять отметку выплаты доли?`, () => toggleExecutorPaid(j, paid), { danger: false, confirmLabel: "Да" })}
+                  onRequestEdit={() => setModal({ kind: "requestEdit", job: j })}
+                  onApproveEdit={() => askConfirm(`Разрешить дезинфектору изменить отчёт по «${j.pest} · ${j.address}»? Свяжись с ним перед этим.`, () => approveReportEdit(j), { danger: false, confirmLabel: "Да, разрешить" })}
+                  onRejectEdit={() => askConfirm(`Отклонить запрос на изменение отчёта?`, () => rejectReportEdit(j), { danger: false, confirmLabel: "Да, отклонить" })}
+                        onHistory={() => setModal({ kind: "history", job: j })}
+                        onOpenDetails={() => setModal({ kind: "details", job: j })}
+                        onDelete={() => askConfirm(`Удалить заявку «${j.pest} · ${j.address}»? Она уйдёт в корзину, восстановить можно будет оттуда.`, () => deleteJob(j))} />
+                    ))}
+                  </div>
+                </div>
+              ))}
+          </>
+        )}
+
+        {!loading && tab === "schedule" && (() => {
+          const DAY_START = 7 * 60, DAY_END = 23 * 60; // 07:00–23:00
+          const dayJobs = jobs.filter((j) => j.scheduled_date === scheduleDate && j.status !== "canceled");
+          const offToday = daysOff.filter((d) => d.off_date === scheduleDate);
+          const offFor = (techId) => offToday.find((d) => d.tech_id === techId);
+          const cols = [...techs.map((t) => ({ id: t.id, name: t.full_name || "—" })), { id: null, name: "Не назначено" }];
+          const shiftDay = (d) => { const x = parseIso(scheduleDate) || new Date(); x.setDate(x.getDate() + d); setScheduleDate(isoOf(x)); };
+          const isToday = scheduleDate === new Date().toISOString().slice(0, 10);
+          const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+          const hours = []; for (let h = 7; h <= 23; h++) hours.push(h);
+          return (
+            <>
+              <div className="kd-tabbar" style={{ marginBottom: 10 }}>
+                <div className="kd-title" style={{ fontSize: 18 }}>График · {isoToRu(scheduleDate)}{isToday ? " (сегодня)" : ""}</div>
+                <div className="kd-tabactions">
+                  <button className="kd-arrow" onClick={() => shiftDay(-1)}><ChevronLeft size={18} /></button>
+                  <button className="kd-btn ghost sm" onClick={() => setScheduleDate(new Date().toISOString().slice(0, 10))}>Сегодня</button>
+                  <button className="kd-arrow" onClick={() => shiftDay(1)}><ChevronRight size={18} /></button>
+                  <input type="date" value={scheduleDate} onChange={(e) => e.target.value && setScheduleDate(e.target.value)} className="kd-tldate" />
+                  <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "dayOff" })}>🌴 Выходной</button>
+                  <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "offCalendar" })}>📅 Выходные</button>
+                </div>
+              </div>
+              {offToday.length > 0 && <div className="kd-hint" style={{ marginBottom: 10 }}>🌴 Сегодня отдыхают: {offToday.map((d) => personName(d.tech_id)).join(", ")}. Их колонки затемнены — не назначай туда выезды.</div>}
+              <div className="kd-timeline">
+                <div className="kd-tlgrid" style={{ gridTemplateColumns: `56px repeat(${cols.length}, minmax(230px, 1fr))` }}>
+                  <div className="kd-tlhead kd-tlcorner"></div>
+                  {cols.map((c) => {
+                    const cnt = dayJobs.filter((j) => (j.assigned_to || null) === c.id).length;
+                    const off = c.id ? offFor(c.id) : null;
+                    return (
+                      <div key={c.id || "none"} className={`kd-tlhead ${off ? "off" : ""}`}>
+                        {c.name}{off ? <span className="kd-offtag">🌴 выходной</span> : (cnt ? <span className="kd-tlcnt">{cnt}</span> : null)}
+                        {off && <button className="kd-offx" title="Снять выходной" onClick={() => askConfirm(`Снять выходной у ${c.name}?`, () => removeDayOff(off), { danger: false, confirmLabel: "Да, снять" })}><X size={12} /></button>}
+                      </div>
+                    );
+                  })}
+                  <div className="kd-tlaxis" style={{ height: DAY_END - DAY_START }}>
+                    {hours.map((h) => <div key={h} className="kd-tlhour" style={{ top: h * 60 - DAY_START }}>{String(h).padStart(2, "0")}:00</div>)}
+                  </div>
+                  {cols.map((c) => {
+                    const colJobs = dayJobs.filter((j) => (j.assigned_to || null) === c.id);
+                    const timed = colJobs.map((j) => ({ j, r: timeRangeMin(j.scheduled_time) })).filter((x) => x.r);
+                    const untimed = colJobs.filter((j) => !timeRangeMin(j.scheduled_time));
+                    const off = c.id ? offFor(c.id) : null;
+                    return (
+                      <div key={c.id || "none"} className={`kd-tlcol ${off ? "off" : ""}`} style={{ height: DAY_END - DAY_START }}>
+                        {isToday && nowMin >= DAY_START && nowMin <= DAY_END && <div className="kd-tlnow" style={{ top: nowMin - DAY_START }} />}
+                        {untimed.length > 0 && (
+                          <div className="kd-tluntimed">
+                            {untimed.map((j) => (
+                              <button key={j.id} className="kd-tlchip" onClick={() => setModal({ kind: "edit", job: j })}>⏱ {addressPlain(j.address) || j.pest}</button>
+                            ))}
+                          </div>
+                        )}
+                        {timed.map(({ j, r }) => {
+                          const top = Math.max(0, r.from - DAY_START);
+                          const height = Math.max(46, Math.min(r.to, DAY_END) - Math.max(r.from, DAY_START));
+                          const st = STATUS[j.status] || STATUS.new;
+                          return (
+                            <button key={j.id} className="kd-tlcard" style={{ top, height, borderLeftColor: st.color, background: st.bg }}
+                              onClick={() => setModal({ kind: "edit", job: j })}>
+                              <div className="kd-tladdr">{addressPlain(j.address)}</div>
+                              <div className="kd-tlsub">{j.scheduled_time || ""} · {j.pest}</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          );
+        })()}
+
+        {!loading && tab === "done" && (
+          <>
+            <div className="kd-seg" style={{ marginBottom: 14 }}>
+              <button className={`kd-segbtn ${doneSortDir === "desc" ? "on" : ""}`} onClick={() => setDoneSortDir("desc")}>Сначала новые</button>
+              <button className={`kd-segbtn ${doneSortDir === "asc" ? "on" : ""}`} onClick={() => setDoneSortDir("asc")}>Сначала старые</button>
+            </div>
+            <DateFilterBar filter={doneDateFilter} onChange={setDoneDateFilter} hide={["tomorrow"]} />
+            {doneFiltered.length === 0 ? <div className="kd-empty">{doneJobs.length === 0 ? "Выполненных заявок пока нет." : "По этому поиску ничего не найдено."}</div> :
+              doneGroups.map((g) => (
+                <div key={g.key} className="kd-group">
+                  <div className="kd-datehead"><span>{g.label}</span><span className="kd-datecount">{g.jobs.length}</span></div>
+                  <div className="kd-list">
+                    {g.jobs.map((j) => (
+                      <JobCard key={j.id} job={j} isAdmin={canEditJobs} onCert={() => certifyJob(j)} onAct={() => certifyAct(j)} assignedName={techById(j.assigned_to)?.full_name} partnerName={partnerNameOf(j)} partnerRepeat={j.brand === "partner" ? repeatLabel(partnerById(j.partner_id)?.repeat_policy) : ""} share={partnerShareAmt(j)}
+                      onCopy={() => copyText(buildMsg(j, brandHeaderOf(j)), () => showToast("Текст скопирован"))}
+                      onProof={() => openJobProof(j)} proofComplete={proofIsComplete(j.id)}
+                      onCopyPublicLink={() => copyPublicJobLink(j)}
+                      onStageChange={(stage) => setJobWorkStage(j, stage)}
+                      onReport={() => setModal({ kind: "report", job: j })}
+                      onAssign={() => setModal({ kind: "assign", job: j })}
+                      onView={() => setModal({ kind: "view", job: j })}
+                      onEdit={() => setModal({ kind: "edit", job: j })}
+                      onRepeat={() => askConfirm(`Отправить заявку «${j.pest} · ${j.address}» на повтор? Она уйдёт во вкладку «Повторы».`, () => putOnRepeat(j), { danger: false, confirmLabel: "Да, на повтор" })}
+                      onPayPartner={(paid) => markPartnerPaid(j, paid)}
+                        onCompPaid={(paid) => markCompPaid(j, paid)}
+                        onCancel={() => setModal({ kind: "cancelJob", job: j })}
+                        onRestore={() => restoreCanceled(j)}
+                  onTransferPaid={() => setModal({ kind: "transferPay", job: j })}
+                  onTechExtras={() => setModal({ kind: "techExtras", job: j })}
+                  executorName={partnerById(j.executor_partner_id)?.name}
+                  onExecutorDone={() => setModal({ kind: "executorDone", job: j })}
+                  onExecutorPaid={(paid) => askConfirm(paid ? `Отметить долю исполнителю выплаченной?` : `Снять отметку выплаты доли?`, () => toggleExecutorPaid(j, paid), { danger: false, confirmLabel: "Да" })}
+                  onRequestEdit={() => setModal({ kind: "requestEdit", job: j })}
+                  onApproveEdit={() => askConfirm(`Разрешить дезинфектору изменить отчёт по «${j.pest} · ${j.address}»? Свяжись с ним перед этим.`, () => approveReportEdit(j), { danger: false, confirmLabel: "Да, разрешить" })}
+                  onRejectEdit={() => askConfirm(`Отклонить запрос на изменение отчёта?`, () => rejectReportEdit(j), { danger: false, confirmLabel: "Да, отклонить" })}
+                      onHistory={() => setModal({ kind: "history", job: j })}
+                        onOpenDetails={() => setModal({ kind: "details", job: j })}
+                      onDelete={() => askConfirm(`Удалить заявку «${j.pest} · ${j.address}»? Она уйдёт в корзину, восстановить можно будет оттуда.`, () => deleteJob(j))} />
+                    ))}
+                  </div>
+                </div>
+              ))}
+          </>
+        )}
+
+        {!loading && tab === "cash" && !canManageCash && (
+          <div className="kd-list">
+            <div className="kd-card">
+              <div className="kd-section">Наличные на руках</div>
+              {techOpening(session.user.id).bal > 0 && <div className="kd-row"><span>Начальный остаток{techOpening(session.user.id).date ? ` (с ${isoToRu(techOpening(session.user.id).date)})` : ""}</span><strong>{fmt(techOpening(session.user.id).bal)} ₸</strong></div>}
+              <div className="kd-row"><span>Собрано с заявок</span><strong>{fmt(techCashCollected(session.user.id))} ₸</strong></div>
+              <div className="kd-row"><span>Уже внесено (подтверждено)</span><strong style={{ color: "var(--primary-d)" }}>{fmt(techDepositedConfirmed(session.user.id))} ₸</strong></div>
+              {techDepositedPending(session.user.id) > 0 && <div className="kd-row"><span>Ожидает подтверждения</span><strong style={{ color: "#B4650B" }}>{fmt(techDepositedPending(session.user.id))} ₸</strong></div>}
+              <div className="kd-row total"><span>На руках сейчас</span><strong style={{ color: "var(--primary-d)", fontSize: 17 }}>{fmt(techCashOnHand(session.user.id))} ₸</strong></div>
+              <button className="kd-btn primary wide" disabled={techCashOnHand(session.user.id) <= 0} onClick={() => setModal({ kind: "deposit", max: techCashOnHand(session.user.id) })} style={{ marginTop: 12 }}><Banknote size={16} />Внести через банкомат</button>
+            </div>
+            {(techBonusTotal(session.user.id) > 0 || techTravelTotal(session.user.id) > 0) && (
+              <div className="kd-card">
+                <div className="kd-section">Мои начисления</div>
+                <div className="kd-row"><span>🎁 Бонусы — начислено всего</span><strong style={{ color: "var(--violet)" }}>{fmt(techBonusTotal(session.user.id))} ₸</strong></div>
+                <div className="kd-row"><span>⛽ Дорожные (ГСМ) — начислено всего</span><strong style={{ color: "var(--violet)" }}>{fmt(techTravelTotal(session.user.id))} ₸</strong></div>
+                <div className="kd-muted" style={{ marginTop: 8 }}>Начисления по твоим заявкам. Выплаты оформляет админ.</div>
+              </div>
+            )}
+            <div className="kd-hint">Внесение через банкомат по ИИН <strong>980515351225 — Тыныс Қ.</strong> После внесения нажми кнопку выше — админ подтвердит поступление.</div>
+            <div className="kd-section" style={{ marginTop: 6 }}>История внесений</div>
+            {deposits.filter((d) => d.tech_id === session.user.id).length === 0 && <div className="kd-empty">Внесений пока не было.</div>}
+            {deposits.filter((d) => d.tech_id === session.user.id).map((d) => {
+              const st = DEPOSIT_STATUS[d.status] || DEPOSIT_STATUS.pending;
+              return (
+                <div key={d.id} className="kd-card">
+                  <div className="kd-card-head">
+                    <div className="kd-pest">{fmt(d.amount)} ₸</div>
+                    <span className="kd-badge" style={{ color: st.color, background: st.bg }}>{st.label}</span>
+                  </div>
+                  <div className="kd-meta"><span>{fmtTs(d.requested_at)}</span>{d.note && <><span>·</span><span>{d.note}</span></>}</div>
+                  {d.status === "rejected" && d.admin_note && <div className="kd-notebox" style={{ color: "#B42318" }}>Причина: {d.admin_note}</div>}
+                  {d.status === "pending" && <div className="kd-actions"><button className="kd-btn ghost danger sm" onClick={() => askConfirm(`Отменить заявку на внесение ${fmt(d.amount)} ₸?`, () => cancelDeposit(d), { confirmLabel: "Да, отменить" })}>Отменить</button></div>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {!loading && tab === "cash" && canManageCash && (
+          <div className="kd-list">
+            {deposits.filter((d) => d.status === "pending").length > 0 && (
+              <>
+                <div className="kd-section">Ожидают подтверждения · {deposits.filter((d) => d.status === "pending").length}</div>
+                {deposits.filter((d) => d.status === "pending").map((d) => (
+                  <div key={d.id} className="kd-card low">
+                    <div className="kd-card-head">
+                      <div className="kd-pest">{techById(d.tech_id)?.full_name || "?"}</div>
+                      <strong style={{ fontSize: 17, color: "var(--primary-d)" }}>{fmt(d.amount)} ₸</strong>
+                    </div>
+                    <div className="kd-meta"><span>Заявлено: {fmtTs(d.requested_at)}</span>{d.note && <><span>·</span><span>{d.note}</span></>}</div>
+                    <div className="kd-actions">
+                      <button className="kd-btn primary sm" onClick={() => setModal({ kind: "confirmDeposit", dep: d })}>Подтвердить</button>
+                      <button className="kd-btn ghost danger sm" onClick={() => setModal({ kind: "rejectDeposit", dep: d })}>Отклонить</button>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
+            <div className="kd-section" style={{ marginTop: deposits.filter((d) => d.status === "pending").length ? 8 : 0 }}>Наличные у дезинфекторов</div>
+            {techs.length === 0 && <div className="kd-muted">Дезинфекторов пока нет.</div>}
+            {techs.map((t) => {
+              const onHand = techCashOnHand(t.id);
+              const pending = techDepositedPending(t.id);
+              return (
+                <div key={t.id} className="kd-card">
+                  <div className="kd-card-head">
+                    <div className="kd-pest">{t.full_name || "(без имени)"}</div>
+                    <strong style={{ fontSize: 16, color: onHand > 0 ? "#B4650B" : "var(--muted)" }}>{fmt(onHand)} ₸ на руках</strong>
+                  </div>
+                  <div className="kd-meta">
+                    <span>Собрано: {fmt(techCashCollected(t.id))} ₸</span><span>·</span>
+                    <span>Внесено: {fmt(techDepositedConfirmed(t.id))} ₸</span>
+                    {pending > 0 && <><span>·</span><span style={{ color: "#B4650B" }}>в ожидании: {fmt(pending)} ₸</span></>}
+                  </div>
+                </div>
+              );
+            })}
+            <div className="kd-section" style={{ marginTop: 8 }}>История внесений</div>
+            {deposits.filter((d) => d.status !== "pending").length === 0 && <div className="kd-muted">Подтверждённых или отклонённых внесений пока нет.</div>}
+            {deposits.filter((d) => d.status !== "pending").map((d) => {
+              const st = DEPOSIT_STATUS[d.status] || DEPOSIT_STATUS.pending;
+              return (
+                <div key={d.id} className="kd-histrow" style={{ cursor: "default" }}>
+                  <div>
+                    <div className="kd-histmain">{techById(d.tech_id)?.full_name || "?"} · {fmt(d.amount)} ₸</div>
+                    <div className="kd-muted">{d.decided_at ? fmtTs(d.decided_at) : fmtTs(d.requested_at)}{d.admin_note ? " · " + d.admin_note : ""}</div>
+                  </div>
+                  <span className="kd-badge" style={{ color: st.color, background: st.bg }}>{st.label}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {!loading && tab === "myequip" && (
+          <div className="kd-list">
+            {techEquipment(session.user.id).length === 0 && <div className="kd-empty">Пока ничего не выдано. Если что-то выдали на объекте — это появится здесь.</div>}
+            {techEquipment(session.user.id).map((r) => (
+              <div key={r.handout.id} className="kd-card">
+                <div className="kd-card-head">
+                  <div className="kd-pest">{r.equip.name}</div>
+                  <span className="kd-badge" style={{ color: "#7C3AED", background: "#F1ECFE" }}>{EQUIP_CATEGORIES[r.equip.category] || r.equip.category}</span>
+                </div>
+                <div className="kd-meta"><span>Кол-во: {r.handout.qty} {r.equip.unit}</span><span>·</span><span>Выдано: {isoToRu(r.handout.handout_date) || "—"}</span></div>
+                {r.handout.note && <div className="kd-notebox">📝 {r.handout.note}</div>}
+                <div className="kd-actions">
+                  <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "reportEquip", handout: r.handout, equip: r.equip, status: "broken" })}>Сообщить о поломке</button>
+                  <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "reportEquip", handout: r.handout, equip: r.equip, status: "lost" })}>Потерял(а)</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!loading && tab === "leads" && (
+          <div className="kd-list">
+            <div className="kd-tabbar" style={{ marginBottom: 4 }}>
+              <div className="kd-title" style={{ fontSize: 18 }}>Клиенты · воронка</div>
+              <div className="kd-tabactions">
+                {settings.drive_kp && <a className="kd-btn ghost" href={settings.drive_kp} target="_blank" rel="noopener noreferrer"><FolderOpen size={15} />Папка КП</a>}
+                <button className="kd-btn primary" onClick={() => setModal({ kind: "lead" })}><Plus size={15} />Новый клиент</button>
+              </div>
+            </div>
+            {leadStages.length === 0 && <div className="kd-empty">Стадии воронки не заданы. Добавь их в Настройках → «Стадии воронки».</div>}
+            {/* фильтр по стадии */}
+            {leadStages.length > 0 && (
+              <div className="kd-datechips" style={{ marginBottom: 6 }}>
+                <button className={`kd-datechip ${leadStageFilter === "all" ? "on" : ""}`} onClick={() => setLeadStageFilter("all")}>Все стадии</button>
+                {[...leadStages].sort((a, b) => a.sort - b.sort).map((st) => {
+                  const cnt = leads.filter((l) => l.stage_id === st.id && !l.converted_job_id).length;
+                  return <button key={st.id} className={`kd-datechip ${leadStageFilter === st.id ? "on" : ""}`} onClick={() => setLeadStageFilter(st.id)}>{st.name}{cnt ? ` · ${cnt}` : ""}</button>;
+                })}
+              </div>
+            )}
+            {[...leadStages].sort((a, b) => a.sort - b.sort).filter((st) => leadStageFilter === "all" || st.id === leadStageFilter).map((st) => {
+              const stageLeads = leads.filter((l) => l.stage_id === st.id && !l.converted_job_id)
+                .sort((a, b) => new Date(a.updated_at || 0) - new Date(b.updated_at || 0));
+              if (leadStageFilter === "all" && stageLeads.length === 0) return null;
+              const sortedStages = [...leadStages].sort((a, b) => a.sort - b.sort);
+              const stIdx = sortedStages.findIndex((x) => x.id === st.id);
+              const nextStage = sortedStages.slice(stIdx + 1).find((x) => !x.is_lost);
+              return (
+                <div key={st.id} className="kd-group">
+                  <div className="kd-datehead"><span>{st.name}{st.is_lost ? " ✕" : ""}</span><span className="kd-datecount">{stageLeads.length}</span></div>
+                  <div className="kd-list">
+                    {stageLeads.length === 0 && <div className="kd-muted" style={{ padding: "2px 2px 8px" }}>Пусто</div>}
+                    {stageLeads.map((l) => (
+                      <div key={l.id} className="kd-card">
+                        <div className="kd-card-head">
+                          <div className="kd-pest">{l.name || l.phone || "Без имени"}</div>
+                          <span className="kd-badge" style={{ color: l.client_type === "company" ? "#2557B0" : "#6E3FCF", background: l.client_type === "company" ? "#E9F0FC" : "#F0EAFC" }}>{l.client_type === "company" ? "Юрлицо" : "Физлицо"}</span>
+                        </div>
+                        <div className="kd-meta">
+                          {l.source && <span>{l.source}</span>}
+                          {l.phone && <a href={`tel:${(l.phone || "").replace(/\s/g, "")}`} style={{ color: "var(--primary-d)", fontWeight: 700 }}>{l.phone}</a>}
+                        </div>
+                        {l.address && <div className="kd-addr" style={{ marginTop: 2 }}><AddressText text={l.address} /></div>}
+                        {(() => {
+                          const d = daysSince(l.updated_at);
+                          const stale = d >= 7;
+                          return (
+                            <div className="kd-touch" style={stale ? { color: "#B3261E" } : {}}>
+                              <Calendar size={13} style={{ verticalAlign: -2, marginRight: 4 }} />
+                              Последнее касание: {isoToRu((l.updated_at || "").slice(0, 10)) || "—"}
+                              <span style={{ marginLeft: 6, fontWeight: 700 }}>· {d === 0 ? "сегодня" : d === 1 ? "вчера" : `${d} дн. назад`}</span>
+                              {stale && <span style={{ marginLeft: 6 }}>⚠ давно не связывались</span>}
+                            </div>
+                          );
+                        })()}
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "8px 0 2px" }}>
+                          {l.kp_url && <a className="kd-btn ghost sm" href={l.kp_url} target="_blank" rel="noopener noreferrer"><FileText size={13} />КП клиента</a>}
+                        </div>
+                        {l.note && <div className="kd-notebox">📝 {l.note}</div>}
+                        <div className="kd-actions">
+                          {nextStage && <button className="kd-btn primary sm" onClick={() => setLeadStage(l, nextStage.id)}>{nextStage.name}<ArrowRight size={13} /></button>}
+                          <button className="kd-btn ghost sm" onClick={() => touchLead(l)}>Касание сегодня</button>
+                          <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "leadStageSelect", lead: l })}>Стадия</button>
+                          <button className="kd-btn ghost sm" onClick={() => askConfirm(`Создать заявку из клиента «${l.name || l.phone || "?"}»? Перенесём телефон, адрес и источник.`, () => convertLeadToJob(l), { danger: false, confirmLabel: "Да, создать" })}><Plus size={13} />Заявка</button>
+                          <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "lead", lead: l })}><Pencil size={13} /></button>
+                          <button className="kd-btn ghost danger sm" onClick={() => askConfirm(`Удалить клиента «${l.name || l.phone || "?"}» из воронки?`, () => removeLead(l))}><Trash2 size={13} /></button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {!loading && tab === "tenders" && (
+          <div className="kd-list">
+            <div className="kd-tabbar" style={{ marginBottom: 4 }}>
+              <div className="kd-title" style={{ fontSize: 18 }}>Тендеры</div>
+              <div className="kd-tabactions">
+                {settings.drive_tenders && <a className="kd-btn ghost" href={settings.drive_tenders} target="_blank" rel="noopener noreferrer"><FolderOpen size={15} />Папка на Диске</a>}
+                {canEditTenders && <button className="kd-btn primary" onClick={() => setModal({ kind: "tender" })}><Plus size={15} />Новый тендер</button>}
+              </div>
+            </div>
+            {tenderOverdue > 0 && <div className="kd-hint" style={{ background: "#FBE7E5", borderColor: "#F1C4BF", color: "#B3261E" }}>⚠ Есть просроченные обработки ({tenderOverdue}). Просрочка грозит штрафом и блокировкой участия — проверь график ниже.</div>}
+            {tenders.length === 0 && <div className="kd-empty">Тендеров пока нет. Добавь первый через «Новый тендер».</div>}
+            {tenders.map((t) => {
+              const st = TENDER_STATUS[t.status] || TENDER_STATUS.participating;
+              const ourAmount = Math.round((Number(t.amount) || 0) * (Number(t.our_share_pct) || 0) / 100);
+              const svcs = servicesOf(t.id);
+              const gtees = guaranteesOf(t.id);
+              const doneCount = svcs.filter((s) => s.done).length;
+              const returnsOfG = (gid) => guaranteeReturns.filter((r) => r.guarantee_id === gid);
+              const returnedSum = (gid) => returnsOfG(gid).reduce((s, r) => s + (Number(r.amount) || 0), 0);
+              // заморожено = внесённые обеспечения минус уже возвращённое
+              const frozen = gtees.filter((g) => g.paid).reduce((s, g) => s + Math.max(0, (Number(g.amount) || 0) - returnedSum(g.id)), 0);
+              return (
+                <div key={t.id} className="kd-card">
+                  <div className="kd-card-head">
+                    <div className="kd-pest">{t.contract_no ? `№ ${t.contract_no}` : (t.title || "Тендер")}</div>
+                    <span className="kd-badge" style={{ color: st.color, background: st.bg }}>{st.label}</span>
+                  </div>
+                  <div className="kd-meta">
+                    {t.customer && <span>🏢 {t.customer}</span>}
+                    {t.title && t.contract_no && <span>{t.title}</span>}
+                    {t.partner_id && <span>🤝 {partnerById(t.partner_id)?.name || "?"}</span>}
+                    {(t.start_date || t.end_date) && <span><Calendar size={12} style={{ verticalAlign: -2, marginRight: 3 }} />{isoToRu(t.start_date) || "?"} — {isoToRu(t.end_date) || "?"}</span>}
+                  </div>
+                  {t.address && <div className="kd-addr" style={{ marginTop: 4 }}><AddressText text={t.address} /></div>}
+
+                  <div className="kd-tenderfin">
+                    <div><span className="kd-muted">Сумма договора</span><strong>{fmt(t.amount)} ₸</strong></div>
+                    <div><span className="kd-muted">Наша доля {t.our_share_pct}%</span><strong style={{ color: "var(--primary-d)" }}>{fmt(ourAmount)} ₸</strong></div>
+                    {frozen > 0 && <div><span className="kd-muted">Заморожено в залогах</span><strong style={{ color: "#B4650B" }}>{fmt(frozen)} ₸</strong></div>}
+                  </div>
+
+                  {/* Обеспечения */}
+                  <div className="kd-tsub">
+                    <div className="kd-tsubhead"><ShieldCheck size={14} /> Обеспечения (залоги)</div>
+                    {gtees.length === 0 && <span className="kd-muted">Не добавлены</span>}
+                    {gtees.map((g) => {
+                      const rets = returnsOfG(g.id);
+                      const retSum = returnedSum(g.id);
+                      const remaining = Math.max(0, (Number(g.amount) || 0) - retSum);
+                      return (
+                        <div key={g.id} className="kd-guaranteebox">
+                          <div className="kd-guarantee">
+                            <div>
+                              <div style={{ fontWeight: 700 }}>{GUARANTEE_KINDS[g.kind] || g.kind} · {fmt(g.amount)} ₸</div>
+                              <div className="kd-muted" style={{ fontSize: 12 }}>
+                                {g.paid ? `внесено ${isoToRu(g.paid_date) || ""}${g.account_id ? " · " + (accountById(g.account_id)?.name || "") : ""}` : "не внесено"}
+                                {g.paid && retSum > 0 && ` · возвращено ${fmt(retSum)} ₸`}
+                                {g.paid && remaining > 0 && ` · заморожено ${fmt(remaining)} ₸`}
+                                {g.paid && remaining === 0 && retSum > 0 && " · возвращено полностью ✓"}
+                              </div>
+                            </div>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              {!g.paid && <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "payGuarantee", g })}>Внести</button>}
+                              {g.paid && remaining > 0 && <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "returnGuarantee", g, remaining })}>Возврат</button>}
+                              <button className="kd-btn ghost danger sm" onClick={() => askConfirm(`Удалить обеспечение «${GUARANTEE_KINDS[g.kind] || g.kind}» на ${fmt(g.amount)} ₸? Связанные движения по счетам тоже удалятся.`, () => removeGuarantee(g))}><X size={13} /></button>
+                            </div>
+                          </div>
+                          {rets.length > 0 && (
+                            <div className="kd-returns">
+                              {rets.map((r) => (
+                                <div key={r.id} className="kd-returnrow">
+                                  <span>↩ {fmt(r.amount)} ₸ · {isoToRu(r.return_date) || "без даты"}{r.account_id ? " · " + (accountById(r.account_id)?.name || "") : ""}</span>
+                                  <button className="kd-btn ghost danger sm" onClick={() => askConfirm(`Удалить запись возврата ${fmt(r.amount)} ₸?`, () => removeGuaranteeReturn(r))}><X size={12} /></button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                    <button className="kd-btn ghost sm" style={{ marginTop: 8 }} onClick={() => setModal({ kind: "guarantee", tenderId: t.id })}><Plus size={13} />Обеспечение</button>
+                  </div>
+
+                  {/* График обработок */}
+                  <div className="kd-tsub">
+                    <div className="kd-tsubhead"><RefreshCw size={14} /> График обработок {svcs.length > 0 && `· ${doneCount}/${svcs.length}`}</div>
+                    {svcs.length === 0 && <span className="kd-muted">Не задан</span>}
+                    {svcs.map((s) => {
+                      const overdue = !s.done && s.due_date && s.due_date < todayIsoT;
+                      return (
+                        <div key={s.id} className={`kd-svcrow ${overdue ? "overdue" : ""}`}>
+                          <div>
+                            <span style={{ fontWeight: 700 }}>№{s.seq}</span>
+                            <span style={{ marginLeft: 8 }}>{isoToRu(s.due_date) || "без даты"}</span>
+                            {overdue && <span className="kd-svcwarn"> · просрочено!</span>}
+                            {s.done && <span className="kd-muted" style={{ marginLeft: 8 }}>✓ {isoToRu(s.done_date) || ""}</span>}
+                          </div>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <button className={`kd-btn sm ${s.done ? "ghost" : "primary"}`} onClick={() => { if (s.done) askConfirm(`Снять отметку выполнения с обработки №${s.seq}?`, () => setServiceDone(s, false), { danger: false, confirmLabel: "Да, снять" }); else setServiceDone(s, true); }}>{s.done ? "Отменить" : "Сделано"}</button>
+                            <button className="kd-btn ghost danger sm" onClick={() => askConfirm(`Удалить обработку №${s.seq} из графика?`, () => removeService(s))}><X size={13} /></button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <button className="kd-btn ghost sm" style={{ marginTop: 8 }} onClick={() => addService(t.id, svcs.length + 1, "")}><Plus size={13} />Обработку</button>
+                  </div>
+
+                  {t.note && <div className="kd-notebox" style={{ marginTop: 10 }}>📝 {t.note}</div>}
+                  {canEditTenders && <div className="kd-actions">
+                    <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "tender", tender: t })}><Pencil size={13} />Изменить</button>
+                    <button className="kd-btn ghost danger sm" onClick={() => askConfirm(`Удалить тендер «${t.contract_no || t.title || ""}»? Вместе с обеспечениями и графиком.`, () => removeTender(t))}><Trash2 size={13} />Удалить</button>
+                  </div>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {!loading && tab === "tasks" && (
+          <div className="kd-list">
+            {canManageTasks && (
+              <div className="kd-tabbar" style={{ marginBottom: 4 }}>
+                <div className="kd-title" style={{ fontSize: 18 }}>Задачи</div>
+                <button className="kd-btn primary" onClick={() => setModal({ kind: "task" })}><Plus size={15} />Новая задача</button>
+              </div>
+            )}
+            <div className="kd-seg" style={{ width: "100%", overflowX: "auto" }}>
+              {[{ id: "open", label: "Активные" }, { id: "today", label: "Сегодня" }, { id: "overdue", label: "Просрочено" }, { id: "done", label: "Сделаны" }, { id: "all", label: "Все" }].map((f) => (
+                <button key={f.id} className={`kd-segbtn ${taskFilter === f.id ? "on" : ""}`} onClick={() => setTaskFilter(f.id)}>{f.label}</button>
+              ))}
+            </div>
+            {canManageTasks && assignableProfiles.length > 0 && (
+              <select className="kd-techselect" value={taskAssignee} onChange={(e) => setTaskAssignee(e.target.value)} style={{ width: "100%" }}>
+                <option value="">Все исполнители</option>
+                {assignableProfiles.map((p) => <option key={p.id} value={p.id}>{p.full_name || p.id.slice(0, 6)}</option>)}
+              </select>
+            )}
+            {filteredTasks.length === 0 && <div className="kd-empty">{taskFilter === "done" ? "Выполненных задач нет." : "Задач нет. Всё чисто 👌"}</div>}
+            {filteredTasks.map((t) => {
+              const st = TASK_STATUS[t.status] || TASK_STATUS.new;
+              const overdue = t.status !== "done" && t.due_date && t.due_date < todayIso;
+              const canEdit = canManageTasks || t.created_by === session.user.id;
+              return (
+                <div key={t.id} className={`kd-card ${t.status === "done" ? "done" : ""} ${overdue ? "low" : ""}`}>
+                  <div className="kd-card-head">
+                    <div className="kd-pest">{t.priority === "urgent" && <span style={{ color: "#B3261E" }}>🔴 </span>}{t.title}</div>
+                    <span className="kd-badge" style={{ color: st.color, background: st.bg }}>{st.label}</span>
+                  </div>
+                  <div className="kd-meta">
+                    <span className="kd-brandtag">{TASK_TYPES[t.type] || t.type}</span>
+                    {t.assignee_id && <span>👤 {personName(t.assignee_id)}</span>}
+                    {t.due_date && <span className="kd-datetimetag" style={overdue ? { color: "#B3261E", background: "#FBE7E5" } : {}}><Calendar size={12} style={{ verticalAlign: "-2px", marginRight: 3 }} />{isoToRu(t.due_date)}{overdue ? " · просрочено" : ""}</span>}
+                  </div>
+                  {t.description && <div className="kd-notebox">{t.description}</div>}
+                  <div className="kd-actions">
+                    {t.status !== "done" && <button className="kd-btn primary sm" onClick={() => setTaskStatus(t, "done")}>Сделано</button>}
+                    {t.status === "new" && <button className="kd-btn ghost sm" onClick={() => setTaskStatus(t, "in_progress")}>В работу</button>}
+                    {t.status === "done" && <button className="kd-btn ghost sm" onClick={() => setTaskStatus(t, "new")}>Вернуть</button>}
+                    {canEdit && <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "task", task: t })}><Pencil size={13} />Изменить</button>}
+                    {canEdit && <button className="kd-btn ghost danger sm" onClick={() => askConfirm(`Удалить задачу «${t.title}»?`, () => removeTask(t))}><Trash2 size={13} /></button>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {!loading && tab === "canceled" && (
+          <div className="kd-list">
+            <DateFilterBar filter={canceledDateFilter} onChange={setCanceledDateFilter} />
+            {canceledJobs.length === 0 ? <div className="kd-empty">Отменённых заявок нет.</div> :
+              canceledFiltered.length === 0 ? <div className="kd-empty">По этому фильтру ничего не найдено.</div> :
+              [...canceledFiltered].sort((a, b) => new Date(b.canceled_at || 0) - new Date(a.canceled_at || 0)).map((j) => (
+                <JobCard key={j.id} job={j} isAdmin={canEditJobs} onCert={() => certifyJob(j)} onAct={() => certifyAct(j)} assignedName={techById(j.assigned_to)?.full_name} partnerName={partnerNameOf(j)} partnerRepeat="" share={partnerShareAmt(j)}
+                  onCopy={() => copyText(buildMsg(j, brandHeaderOf(j)), () => showToast("Текст скопирован"))}
+                  onProof={() => openJobProof(j)} proofComplete={proofIsComplete(j.id)}
+                  onCopyPublicLink={() => copyPublicJobLink(j)}
+                  onStageChange={(stage) => setJobWorkStage(j, stage)}
+                  onReport={() => setModal({ kind: "report", job: j })}
+                  onAssign={() => setModal({ kind: "assign", job: j })}
+                  onView={() => setModal({ kind: "view", job: j })}
+                  onEdit={() => setModal({ kind: "edit", job: j })}
+                  onRepeat={() => askConfirm(`Отправить заявку «${j.pest} · ${j.address}» на повтор? Она уйдёт во вкладку «Повторы».`, () => putOnRepeat(j), { danger: false, confirmLabel: "Да, на повтор" })}
+                  onPayPartner={(paid) => markPartnerPaid(j, paid)}
+                  onCompPaid={(paid) => markCompPaid(j, paid)}
+                  onCancel={() => setModal({ kind: "cancelJob", job: j })}
+                  onRestore={() => restoreCanceled(j)}
+                  onTransferPaid={() => setModal({ kind: "transferPay", job: j })}
+                  onTechExtras={() => setModal({ kind: "techExtras", job: j })}
+                  executorName={partnerById(j.executor_partner_id)?.name}
+                  onExecutorDone={() => setModal({ kind: "executorDone", job: j })}
+                  onExecutorPaid={(paid) => askConfirm(paid ? `Отметить долю исполнителю выплаченной?` : `Снять отметку выплаты доли?`, () => toggleExecutorPaid(j, paid), { danger: false, confirmLabel: "Да" })}
+                  onRequestEdit={() => setModal({ kind: "requestEdit", job: j })}
+                  onApproveEdit={() => askConfirm(`Разрешить дезинфектору изменить отчёт по «${j.pest} · ${j.address}»? Свяжись с ним перед этим.`, () => approveReportEdit(j), { danger: false, confirmLabel: "Да, разрешить" })}
+                  onRejectEdit={() => askConfirm(`Отклонить запрос на изменение отчёта?`, () => rejectReportEdit(j), { danger: false, confirmLabel: "Да, отклонить" })}
+                  onHistory={() => setModal({ kind: "history", job: j })}
+                  onOpenDetails={() => setModal({ kind: "details", job: j })}
+                  onDelete={() => askConfirm(`Удалить заявку «${j.pest} · ${j.address}»? Она уйдёт в корзину.`, () => deleteJob(j))} />
+              ))}
+          </div>
+        )}
+
+        {!loading && tab === "repeats" && (
+          <div className="kd-list">
+            {jobs.filter((j) => j.repeat_state === "on_repeat").length === 0 &&
+              <div className="kd-empty">На повторе пока никого нет. Выполненную заявку можно отправить сюда кнопкой «На повтор».</div>}
+            {jobs.filter((j) => j.repeat_state === "on_repeat")
+              .sort((a, b) => new Date(a.repeat_since || 0) - new Date(b.repeat_since || 0))
+              .map((j) => (
+                <RepeatCard key={j.id} job={j} onSaveNote={saveRepeatNote} onCreate={createRepeatJob}
+                  onFinish={(job) => askConfirm(`Завершить повтор по заявке «${job.pest} · ${job.address}»? Клиент отказался от повторной обработки. Заявка вернётся в «Выполненные».`, () => finishRepeat(job), { danger: false, confirmLabel: "Да, завершить" })}
+                  onUnset={(job) => askConfirm(`Убрать заявку «${job.pest} · ${job.address}» с повтора и вернуть в «Выполненные»?`, () => unsetRepeat(job), { danger: false, confirmLabel: "Да, убрать" })}
+                  repeatHint={j.brand === "partner" && partnerById(j.partner_id) ? `Повтор у партнёра ${partnerById(j.partner_id).name}: ${repeatLabel(partnerById(j.partner_id).repeat_policy)}` : "Повтор: 50% от первичной (стандарт)"} />
+              ))}
+          </div>
+        )}
+
+        {!loading && tab === "growth" && (
+          <div className="kd-stage2">
+            <div className="kd-kpigrid">
+              <div className="kd-kpicard"><span>Прибыль по заявкам</span><strong className={totalJobProfit >= 0 ? "pos" : "neg"}>{fmt(totalJobProfit)} ₸</strong><small>без общих операционных расходов</small></div>
+              <div className="kd-kpicard"><span>Средняя маржа</span><strong>{averageJobMargin}%</strong><small>{completedEconomics.length} выполненных заявок</small></div>
+              <div className="kd-kpicard"><span>Убыточные заявки</span><strong className={lossJobs.length ? "neg" : "pos"}>{lossJobs.length}</strong><small>нужно проверить расходы и цену</small></div>
+              <div className="kd-kpicard"><span>Потерянная выручка</span><strong className="neg">{fmt(lostRevenue)} ₸</strong><small>{canceledJobs.length} отменённых заявок</small></div>
+            </div>
+
+            <div className="kd-stage2grid">
+              <section className="kd-card">
+                <div className="kd-stage2head"><div><div className="kd-title">Юнит-экономика заявок</div><div className="kd-muted">Выручка минус все прямые расходы</div></div><TrendingUp size={20} /></div>
+                {completedEconomics.length === 0 && <div className="kd-empty">Выполненных заявок пока нет.</div>}
+                <div className="kd-metrictable">
+                  {completedEconomics.sort((a, b) => a.econ.profit - b.econ.profit).slice(0, 30).map(({ job, econ }) => <button key={job.id} onClick={() => setModal({ kind: "economics", job, economics: econ })}>
+                    <span><strong>{job.pest}</strong><small>{isoToRu(job.scheduled_date)} · {job.client_phone}</small></span>
+                    <span className="right"><strong className={econ.profit >= 0 ? "pos" : "neg"}>{fmt(econ.profit)} ₸</strong><small>маржа {econ.margin}%</small></span><ArrowRight size={15} />
+                  </button>)}
+                </div>
+              </section>
+              <section className="kd-card">
+                <div className="kd-stage2head"><div><div className="kd-title">Рейтинг источников</div><div className="kd-muted">Текущий месяц · сортировка по прибыли</div></div><Star size={20} /></div>
+                {sourceRatings.length === 0 && <div className="kd-empty">Нет заявок за текущий месяц.</div>}
+                <div className="kd-ranktable"><div className="head"><span># / Источник</span><span>Конверсия</span><span>Чек</span><span>ROI</span><span>Прибыль</span></div>
+                  {sourceRatings.map((r, i) => <div key={r.key}><span><b>{i + 1}</b> {r.label}<small>{r.total} обращ.</small></span><strong>{r.conversion}%</strong><strong>{fmt(r.avgCheck)} ₸</strong><strong>{r.roi == null ? "—" : r.roi.toFixed(1) + "×"}</strong><strong className={r.profit >= 0 ? "pos" : "neg"}>{fmt(r.profit)} ₸</strong></div>)}
+                </div>
+              </section>
+            </div>
+            <section className="kd-card">
+              <div className="kd-stage2head"><div><div className="kd-title">Рейтинг менеджеров</div><div className="kd-muted">Кто создаёт заявки, сколько закрывает и с какой прибылью</div></div><Users size={20} /></div>
+              {managerRatings.length === 0 && <div className="kd-empty">Нет данных за текущий месяц.</div>}
+              <div className="kd-ranktable"><div className="head"><span># / Менеджер</span><span>Заявки</span><span>Конверсия</span><span>Средний чек</span><span>Прибыль</span></div>
+                {managerRatings.map((r, i) => <div key={r.id}><span><b>{i + 1}</b> {r.label}<small>{r.canceled} отмен</small></span><strong>{r.total}</strong><strong>{r.conversion}%</strong><strong>{fmt(r.avgCheck)} ₸</strong><strong className={r.profit >= 0 ? "pos" : "neg"}>{fmt(r.profit)} ₸</strong></div>)}
+              </div>
+            </section>
+          </div>
+        )}
+
+        {!loading && tab === "retention" && (
+          <div className="kd-stage2">
+            <div className="kd-kpigrid">
+              <div className="kd-kpicard"><span>Касания на сегодня</span><strong className={dueFollowups.length ? "neg" : "pos"}>{dueFollowups.length}</strong><small>{openFollowups.length} всего открыто</small></div>
+              <div className="kd-kpicard"><span>Контроль качества</span><strong>{qualityPending.length}</strong><small>ожидают звонка</small></div>
+              <div className="kd-kpicard"><span>Средняя оценка</span><strong>{qualityChecks.filter((q) => q.rating).length ? (qualityChecks.reduce((s, q) => s + (Number(q.rating) || 0), 0) / qualityChecks.filter((q) => q.rating).length).toFixed(1) : "—"}</strong><small>по ответившим клиентам</small></div>
+              <div className="kd-kpicard"><span>Допродажи</span><strong>{upsellCandidates.length}</strong><small>актуальных возможностей</small></div>
+            </div>
+
+            <section className="kd-card">
+              <div className="kd-stage2head"><div><div className="kd-title">Повторные касания</div><div className="kd-muted">Просроченные и запланированные звонки</div></div><CalendarClock size={20} /></div>
+              {openFollowups.length === 0 && <div className="kd-empty">Касаний пока нет. Добавь их из отменённого клиента или вручную.</div>}
+              <div className="kd-followlist">{openFollowups.map((f) => {
+                const phone = String(f.phone || "").replace(/\D/g, ""); const overdue = f.due_date && f.due_date < todayIso;
+                return <div key={f.id} className={overdue ? "overdue" : ""}><div><strong>{f.client_name || f.phone}</strong><span>{isoToRu(f.due_date)} · {({ lost: "возврат клиента", quality: "качество", review: "отзыв", upsell: "допродажа", contract: "абонент" })[f.kind] || f.kind}</span>{f.note && <small>{f.note}</small>}</div><div className="actions">{phone && <a className="kd-btn wa sm" href={`https://wa.me/${phone}`} target="_blank" rel="noreferrer"><MessageCircle size={14} />WhatsApp</a>}<button className="kd-btn ghost sm" onClick={() => setModal({ kind: "followup", followup: f })}>Изменить</button><button className="kd-btn primary sm" onClick={() => setFollowupDone(f)}>Готово</button></div></div>;
+              })}</div>
+            </section>
+
+            <div className="kd-stage2grid">
+              <section className="kd-card"><div className="kd-stage2head"><div><div className="kd-title">Потерянные клиенты</div><div className="kd-muted">Отменённые заявки без запланированного возврата</div></div><UserRoundX size={20} /></div>
+                <div className="kd-compactlist">{canceledJobs.filter((j) => !openFollowups.some((f) => f.job_id === j.id && f.kind === "lost")).slice(0, 15).map((j) => <div key={j.id}><span><strong>{j.client_phone}</strong><small>{j.cancel_reason || "Причина не указана"} · {j.pest}</small></span><button className="kd-btn ghost sm" onClick={() => setModal({ kind: "followup", job: j, defaultKind: "lost" })}>Вернуть</button></div>)}</div>
+              </section>
+              <section className="kd-card"><div className="kd-stage2head"><div><div className="kd-title">Контроль качества</div><div className="kd-muted">После выполненной обработки</div></div><ClipboardCheck size={20} /></div>
+                <div className="kd-compactlist">{qualityPending.slice(0, 15).map((j) => <div key={j.id}><span><strong>{j.client_phone} · {j.pest}</strong><small>{isoToRu(j.scheduled_date)} · {addressPlain(j.address)}</small></span><button className="kd-btn primary sm" onClick={() => setModal({ kind: "quality", job: j })}>Проверить</button></div>)}</div>
+              </section>
+            </div>
+
+            {qualityChecks.length > 0 && <section className="kd-card"><div className="kd-stage2head"><div><div className="kd-title">Результаты контроля и отзывы</div><div className="kd-muted">Оценки, проблемы и готовые запросы отзывов</div></div><Star size={20} /></div>
+              <div className="kd-followlist">{qualityChecks.slice(0, 20).map((q) => { const job = jobs.find((j) => j.id === q.job_id); if (!job) return null; const phone = String(job.client_phone || "").replace(/\D/g, ""); const reviewText = `Здравствуйте! Спасибо, что выбрали KazDez. Будем благодарны, если вы оставите отзыв о нашей работе: ${q.review_url || ""}`; return <div key={q.id}><div><strong>{job.client_phone} · оценка {q.rating || "—"}/5</strong><span>{({ positive: "всё хорошо", repeat: "нужен повтор", complaint: "претензия", no_answer: "не ответил" })[q.result] || q.result}</span>{q.note && <small>{q.note}</small>}</div><div className="actions"><button className="kd-btn ghost sm" onClick={() => setModal({ kind: "quality", job })}>Изменить</button>{q.review_requested && q.review_url && phone && <a className="kd-btn wa sm" href={`https://wa.me/${phone}?text=${encodeURIComponent(reviewText)}`} target="_blank" rel="noreferrer"><Star size={14} />Запросить отзыв</a>}</div></div>; })}</div>
+            </section>}
+
+            <section className="kd-card"><div className="kd-stage2head"><div><div className="kd-title">Автоматические допродажи</div><div className="kd-muted">Предложение определяется по виду услуги и объекту</div></div><Sparkles size={20} /></div>
+              <div className="kd-upsellgrid">{upsellCandidates.map((j) => <div key={j.id}><div><strong>{j.client_phone} · {j.pest}</strong><span>Предложить: {upsellFor(j)}</span></div><div className="actions"><a className="kd-btn wa sm" href={upsellWhatsappUrl(j)} target="_blank" rel="noreferrer"><MessageCircle size={14} />Предложить</a><button className="kd-btn ghost sm" onClick={() => setModal({ kind: "followup", job: j, defaultKind: "upsell" })}>На потом</button></div></div>)}</div>
+            </section>
+          </div>
+        )}
+
+        {!loading && tab === "subscriptions" && (
+          <div className="kd-stage2">
+            <div className="kd-kpigrid">
+              <div className="kd-kpicard"><span>Активных договоров</span><strong>{activeContracts.length}</strong><small>регулярные клиенты</small></div>
+              <div className="kd-kpicard"><span>Пора создать заявку</span><strong className={dueContracts.length ? "neg" : "pos"}>{dueContracts.length}</strong><small>дата уже наступила</small></div>
+              <div className="kd-kpicard"><span>Плановая выручка</span><strong>{fmt(activeContracts.reduce((s, c) => s + (Number(c.price) || 0), 0))} ₸</strong><small>один цикл всех договоров</small></div>
+              <div className="kd-kpicard"><span>Неактивных</span><strong>{contracts.length - activeContracts.length}</strong><small>приостановленные договоры</small></div>
+            </div>
+            {contracts.length === 0 && <div className="kd-empty">Абонентских договоров нет. Добавь первый договор кнопкой «+ Абонент».</div>}
+            <div className="kd-contractgrid">{contracts.map((c) => { const due = c.active !== false && c.next_service_date <= todayIso; return <div className={`kd-card ${due ? "low" : ""}`} key={c.id}><div className="kd-card-head"><div className="kd-pest">{c.client_name}</div><span className="kd-badge" style={{ color: c.active !== false ? "#0E7C66" : "#6E7871", background: c.active !== false ? "#E4F3EE" : "#F0F0EE" }}>{c.active !== false ? "активен" : "пауза"}</span></div><div className="kd-addr">{c.address}</div><div className="kd-row"><span>Услуга</span><strong>{c.service}</strong></div><div className="kd-row"><span>Каждые</span><strong>{c.interval_days} дн.</strong></div><div className="kd-row"><span>Следующий выезд</span><strong className={due ? "kd-neg" : ""}>{isoToRu(c.next_service_date)}</strong></div><div className="kd-row total"><span>Стоимость</span><strong>{fmt(c.price)} ₸</strong></div><div className="kd-actions">{c.active !== false && <button className="kd-btn primary sm" onClick={() => createContractJob(c)}><Plus size={13} />Создать заявку</button>}<button className="kd-btn ghost sm" onClick={() => setModal({ kind: "contract", contract: c })}>Изменить</button><button className="kd-btn ghost danger sm" onClick={() => askConfirm(`Удалить договор «${c.client_name}»?`, () => removeContract(c))}><Trash2 size={13} /></button></div></div>; })}</div>
+          </div>
+        )}
+
+        {!loading && tab === "routes" && (() => {
+          const rows = jobs.filter((j) => j.scheduled_date === routeDate && j.status !== "canceled" && (routeTech === "all" || (routeTech === "none" ? !j.assigned_to : j.assigned_to === routeTech))).sort((a, b) => jobTime(a) - jobTime(b));
+          const groups = [...new Set(rows.map((j) => j.assigned_to || "none"))].map((techId) => ({ techId, jobs: rows.filter((j) => (j.assigned_to || "none") === techId) }));
+          return <div className="kd-stage2">
+            <div className="kd-routebar">
+              <input type="date" value={routeDate} onChange={(e) => setRouteDate(e.target.value)} />
+              <select value={routeTech} onChange={(e) => setRouteTech(e.target.value)}>
+                <option value="all">Все исполнители</option><option value="none">Не назначено</option>
+                {techs.map((t) => <option key={t.id} value={t.id}>{t.full_name}</option>)}
+              </select>
+              <button className="kd-btn ghost" onClick={() => setRouteDate(todayIso)}>Сегодня</button>
+            </div>
+            {rows.length === 0 && <div className="kd-empty">На выбранную дату заявок нет.</div>}
+            <div className="kd-routegrid">{groups.map((g) => <section className="kd-card" key={g.techId}>
+              <div className="kd-stage2head"><div>
+                <div className="kd-title">{g.techId === "none" ? "Не назначено" : techById(g.techId)?.full_name}</div>
+                <div className="kd-muted">{g.jobs.length} адресов · по времени заявок{g.jobs.length > 8 ? " · в маршрут войдут первые 8" : ""}</div>
+              </div>
+                <div className="kd-route-actions">
+                  <button className="kd-btn ghost sm" onClick={() => copyText(g.jobs.map((j, index) => `${index + 1}. ${j.scheduled_time || "без времени"} · ${addressPlain(j.address)}`).join("\n"), () => showToast("Адреса скопированы"))}>Скопировать</button>
+                  <a className="kd-btn primary sm" href={yandexRouteUrl(g.jobs.map((j) => addressPlain(j.address)).filter((address) => address && address !== "📍 точка на карте"))} target="_blank" rel="noreferrer">
+                    <Navigation size={14} />Маршрут в Яндекс
+                  </a>
+                </div>
+              </div>
+              <div className="kd-routelist">{g.jobs.map((j, i) => <div key={j.id}>
+                <b>{i + 1}</b><span><strong>{j.scheduled_time || "без времени"} · {j.pest}</strong><small>{addressPlain(j.address)} · {j.client_phone}</small></span>
+                <a href={yandexMapUrl(j.address)} target="_blank" rel="noreferrer" title="Открыть адрес в Яндекс Картах"><MapPin size={16} /></a>
+              </div>)}</div>
+            </section>)}</div>
+          </div>;
+        })()}
+
+        {!loading && tab === "finance" && (
+          <>
+            <div className="kd-periodbar">
+              <div className="kd-seg">
+                {[{ id: "all", label: "Всё время" }, { id: "week", label: "Неделя" }, { id: "month", label: "Месяц" }].map((p) => (
+                  <button key={p.id} className={`kd-segbtn ${pMode === p.id ? "on" : ""}`} onClick={() => { setPMode(p.id); setPOff(0); }}>{p.label}</button>
+                ))}
+              </div>
+              {pMode !== "all" && (
+                <div className="kd-pernav">
+                  <button className="kd-arrow" onClick={() => setPOff(pOff - 1)}><ChevronLeft size={18} /></button>
+                  <span className="kd-perlabel">{range.label}</span>
+                  <button className="kd-arrow" disabled={pOff >= 0} onClick={() => setPOff(pOff + 1)}><ChevronRight size={18} /></button>
+                </div>
+              )}
+              <div className="kd-seg">
+                {[{ id: "all", label: "Все заявки" }, { id: "ours", label: "Наши" }, { id: "partner", label: "Партнёрские" }].map((p) => (
+                  <button key={p.id} className={`kd-segbtn ${brandFilter === p.id ? "on" : ""}`} onClick={() => setBrandFilter(p.id)}>{p.label}</button>
+                ))}
+              </div>
+            </div>
+            <div className="kd-twocol">
+              <div className="kd-card">
+                <div className="kd-section">Итоги · {range.label}{brandFilter !== "all" ? ` · ${brandFilter === "ours" ? "наши заявки" : "партнёрские"}` : ""}</div>
+                <div className="kd-row"><span>Выручка</span><strong>{fmt(fin.revenue)} ₸</strong></div>
+                <div className="kd-row"><span>· наличными</span><span className="kd-muted">{fmt(fin.cash)} ₸</span></div>
+                <div className="kd-row"><span>· QR / переводом</span><span className="kd-muted">{fmt(fin.qr)} ₸</span></div>
+                <div className="kd-row"><span>Себестоимость препаратов</span><strong style={{ color: "#B42318" }}>− {fmt(fin.cost)} ₸</strong></div>
+                <div className="kd-row"><span>Доли партнёров</span><strong style={{ color: "#B42318" }}>− {fmt(fin.partnerShares)} ₸</strong></div>
+                {fin.executorShares > 0 && <div className="kd-row"><span>Доли исполнителей (наши заявки партнёрам)</span><strong style={{ color: "#B42318" }}>− {fmt(fin.executorShares)} ₸</strong></div>}
+                <div className="kd-row"><span>Комиссия банка по QR (0.95%)</span><strong style={{ color: "#B42318" }}>− {fmt(fin.qrFees)} ₸</strong></div>
+                {fin.partnerComp > 0 && <div className="kd-row"><span>Компенсации от партнёров (на Kaspi)</span><strong style={{ color: "#0E7C66" }}>+ {fmt(fin.partnerComp)} ₸</strong></div>}
+                <div className="kd-row"><span>Прибыль по заявкам</span><strong>{fmt(fin.profit)} ₸</strong></div>
+                <div className="kd-row"><span>Выплаты сотрудникам (зарплата/дорожные)</span><strong style={{ color: "#B42318" }}>− {fmt(expensesInRange)} ₸</strong></div>
+                <div className="kd-row"><span>Операционные расходы</span><strong style={{ color: "#B42318" }}>− {fmt(opexInRange)} ₸</strong></div>
+                <div className="kd-row total"><span>Итоговая прибыль</span><strong style={{ color: netProfit >= 0 ? "#0E7C66" : "#B42318" }}>{fmt(netProfit)} ₸</strong></div>
+              </div>
+              <div className="kd-card">
+                <div className="kd-section">Средний чек · {range.label}</div>
+                <div className="kd-row"><span>Наши заявки</span><span className="kd-twoval"><em>{fin.avgCheck.oursN} заявок</em><strong>{fmt(fin.avgCheck.ours)} ₸</strong></span></div>
+                <div className="kd-row"><span>Партнёрские</span><span className="kd-twoval"><em>{fin.avgCheck.partnerN} заявок</em><strong>{fmt(fin.avgCheck.partner)} ₸</strong></span></div>
+                <div className="kd-row total"><span>Общий (все заявки)</span><span className="kd-twoval"><em>{fin.avgCheck.allN} заявок</em><strong style={{ color: "var(--primary-d)" }}>{fmt(fin.avgCheck.all)} ₸</strong></span></div>
+                <div className="kd-muted" style={{ marginTop: 8 }}>Чек = выручка ÷ число выполненных оплаченных заявок за период. Считается по всем заявкам, независимо от фильтра выше.</div>
+              </div>
+              <div className="kd-card">
+                <div className="kd-section">Источники клиентов</div>
+                {Object.keys(fin.bySource).length === 0 && <div className="kd-muted">За период заявок нет.</div>}
+                {Object.entries(fin.bySource).sort((a, b) => b[1].count - a[1].count).map(([key, v]) => (
+                  <div className="kd-row" key={key}><span>{v.label}</span><span className="kd-twoval"><em>{v.count} заявок</em><strong>{fmt(v.revenue)} ₸</strong></span></div>
+                ))}
+              </div>
+            </div>
+            <div className="kd-card" style={{ marginTop: 14 }}>
+              <div className="kd-section">По дням недели · {range.label}</div>
+              {fin.week.map((w) => (
+                <div className="kd-weekrow" key={w.dow}>
+                  <span className="kd-weekday">{w.label}</span>
+                  <div className="kd-weekbar"><div className="kd-weekfill" style={{ width: `${Math.round((w.revenue / fin.weekMax) * 100)}%` }} /></div>
+                  <span className="kd-weekcount">{w.count} зав.</span>
+                  <strong className="kd-weeksum">{fmt(w.revenue)} ₸</strong>
+                </div>
+              ))}
+            </div>
+            <div className="kd-card" style={{ marginTop: 14 }}>
+              <div className="kd-section">По дезинфекторам · {range.label}</div>
+              {techs.length === 0 && <div className="kd-muted">Дезинфекторов пока нет.</div>}
+              {techs.length > 0 && Object.keys(fin.byTech).length === 0 && <div className="kd-muted">За период выполненных заявок нет.</div>}
+              {techs.length > 0 && Object.keys(fin.byTech).length > 0 && (
+                <div className="kd-ledgerhead" style={{ gridTemplateColumns: "1.4fr 1fr 1fr 1fr" }}><span>Сотрудник</span><span>Заявок</span><span>Выручка</span><span>Прибыль</span></div>
+              )}
+              {techs.map((t) => {
+                const v = fin.byTech[t.id];
+                if (!v) return null;
+                const techProfit = v.revenue - v.cost;
+                return (
+                  <div className="kd-ledgerrow" key={t.id} style={{ gridTemplateColumns: "1.4fr 1fr 1fr 1fr" }}>
+                    <span className="kd-ledgername">{t.full_name || "?"}</span>
+                    <span>{v.count} зав.</span>
+                    <span>{fmt(v.revenue)} ₸</span>
+                    <strong style={{ color: "#0E7C66" }}>{fmt(techProfit)} ₸</strong>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        {!loading && tab === "opex" && (
+          <>
+            <div className="kd-seg" style={{ marginBottom: 14 }}>
+              <button className={`kd-segbtn ${opexView === "accounts" ? "on" : ""}`} onClick={() => setOpexView("accounts")}>Счета и движения</button>
+              <button className={`kd-segbtn ${opexView === "marketing" ? "on" : ""}`} onClick={() => setOpexView("marketing")}>Маркетинг</button>
+            </div>
+
+            {opexView === "accounts" && (<>
+            <div className="kd-tabbar" style={{ marginBottom: 8 }}>
+              <div className="kd-title" style={{ fontSize: 18 }}>Финансы · счета</div>
+              <div className="kd-tabactions">
+                <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "account" })}><Plus size={14} />Счёт</button>
+                <button className="kd-btn primary" onClick={() => setModal({ kind: "move" })}><Plus size={15} />Движение</button>
+              </div>
+            </div>
+
+            <div className="kd-stockgrid" style={{ gridTemplateColumns: `repeat(${Math.min(accounts.length || 1, 3)}, 1fr)` }}>
+              {accounts.length === 0 && <div className="kd-muted">Счетов нет. Добавь через «+ Счёт».</div>}
+              {accounts.map((a) => (
+                <div key={a.id} className="kd-card" style={{ boxShadow: "none" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                    <span className="kd-muted" style={{ fontWeight: 700 }}>{a.name}</span>
+                    <button onClick={() => setModal({ kind: "account", item: a })} style={{ border: "none", background: "transparent", cursor: "pointer", color: "var(--muted)", display: "flex" }}><Pencil size={13} /></button>
+                  </div>
+                  <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 20, color: accountBalance(a.id) < 0 ? "#B3261E" : "var(--ink)" }}>{fmt(accountBalance(a.id))} ₸</div>
+                  {(Number(a.opening_balance) > 0 || a.opening_date) && <div className="kd-muted" style={{ fontSize: 12, marginTop: 3 }}>старт: {fmt(Number(a.opening_balance) || 0)} ₸{a.opening_date ? ` с ${isoToRu(a.opening_date)}` : ""}</div>}
+                  <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {a.id === qrAccountId && <span className="kd-srctag">сюда падают QR</span>}
+                    {a.id === cashDepositAccountId && <span className="kd-brandtag">сдача налички</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="kd-periodbar" style={{ marginTop: 16 }}>
+              <div className="kd-seg">
+                {[{ id: "all", label: "Всё время" }, { id: "week", label: "Неделя" }, { id: "month", label: "Месяц" }].map((p) => (
+                  <button key={p.id} className={`kd-segbtn ${pMode === p.id ? "on" : ""}`} onClick={() => { setPMode(p.id); setPOff(0); }}>{p.label}</button>
+                ))}
+              </div>
+              {pMode !== "all" && (
+                <div className="kd-pernav">
+                  <button className="kd-arrow" onClick={() => setPOff(pOff - 1)}><ChevronLeft size={18} /></button>
+                  <span className="kd-perlabel">{range.label}</span>
+                  <button className="kd-arrow" disabled={pOff >= 0} onClick={() => setPOff(pOff + 1)}><ChevronRight size={18} /></button>
+                </div>
+              )}
+            </div>
+
+            {(() => {
+              const inRange = (d) => pMode === "all" || (d && new Date(d).getTime() >= range.start && new Date(d).getTime() < range.end);
+              const movesInRange = moves.filter((m) => inRange(m.move_date)).sort((a, b) => new Date(b.move_date || 0) - new Date(a.move_date || 0));
+              const income = movesInRange.filter((m) => m.direction === "income").reduce((s, m) => s + (Number(m.amount) || 0), 0);
+              const expense = movesInRange.filter((m) => m.direction === "expense").reduce((s, m) => s + (Number(m.amount) || 0), 0);
+              return (
+                <>
+                  <div className="kd-card" style={{ marginBottom: 14 }}>
+                    <div className="kd-section">Итоги движений · {range.label}</div>
+                    <div className="kd-row"><span>Доходы (ручные + сдача налички)</span><strong style={{ color: "#0E7C66" }}>+ {fmt(income)} ₸</strong></div>
+                    <div className="kd-row"><span>Расходы</span><strong style={{ color: "#B42318" }}>− {fmt(expense)} ₸</strong></div>
+                    <div className="kd-muted" style={{ marginTop: 8 }}>QR-оплаты по заявкам приходят на счёт «{accountById(qrAccountId)?.name || "не выбран"}» автоматически (минус комиссия банка) и в этот список не входят — их видно в «Аналитике».</div>
+                  </div>
+
+                  <div className="kd-list">
+                    {movesInRange.length === 0 && <div className="kd-empty">Движений за период нет. Добавь доход, расход или перевод через «+ Движение».</div>}
+                    {movesInRange.map((m) => {
+                      const isIncome = m.direction === "income", isExpense = m.direction === "expense", isTransfer = m.direction === "transfer";
+                      const color = isIncome ? "#0E7C66" : isExpense ? "#B42318" : "#B4650B";
+                      const sign = isIncome ? "+ " : isExpense ? "− " : "";
+                      const title = isTransfer ? `${accountById(m.account_id)?.name || "?"} → ${accountById(m.to_account_id)?.name || "?"}` : (accountById(m.account_id)?.name || "?");
+                      const cat = m.category_id ? catName(m.category_id) + (m.subcategory_id ? " · " + catName(m.subcategory_id) : "") : "";
+                      return (
+                        <div key={m.id} className="kd-card">
+                          <div className="kd-card-head">
+                            <div className="kd-pest" style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                              {isIncome ? <ArrowDownCircle size={17} color={color} /> : isExpense ? <ArrowUpCircle size={17} color={color} /> : <ArrowRightLeft size={17} color={color} />}
+                              {title}
+                            </div>
+                            <strong style={{ color, fontSize: 16 }}>{sign}{fmt(m.amount)} ₸</strong>
+                          </div>
+                          <div className="kd-meta">
+                            <span>{isoToRu(m.move_date) || "без даты"}</span>
+                            {cat && <><span>·</span><span className="kd-doctag">{cat}</span></>}
+                            {m.source !== "manual" && <><span>·</span><span className="kd-muted">авто</span></>}
+                          </div>
+                          {m.note && <div className="kd-notebox">📝 {m.note}</div>}
+                          {m.source === "manual" && (
+                            <div className="kd-actions">
+                              <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "move", move: m })}><Pencil size={13} />Изменить</button>
+                              <button className="kd-btn ghost danger sm" onClick={() => askConfirm(`Удалить движение на ${fmt(m.amount)} ₸?`, () => removeMove(m))}><Trash2 size={13} /></button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              );
+            })()}
+            </>)}
+
+            {opexView === "marketing" && (() => {
+              const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+              const monthStartIso = isoOf(monthStart);
+              const goal = Number(settings.mkt_revenue_goal) || 15000000;
+              const adPct = Number(settings.mkt_ad_percent) || 10;
+              const budget = Math.round(goal * adPct / 100);
+              // выручка этого календарного месяца по источнику (done-заявки)
+              const revenueBySource = (srcKey) => {
+                if (!srcKey) return 0;
+                return jobs.filter((j) => j.status === "done" && j.scheduled_date && j.scheduled_date >= monthStartIso && norm(j.source) === norm(srcKey))
+                  .reduce((s, j) => s + (Number(j.report_paid) || 0), 0);
+              };
+              const topupsThisMonth = (chId) => mktTopups.filter((t) => t.channel_id === chId && t.topup_date >= monthStartIso);
+              const spentThisMonth = (chId) => topupsThisMonth(chId).reduce((s, t) => s + (Number(t.amount) || 0), 0);
+              const totalPlan = mktChannels.reduce((s, c) => s + (Number(c.monthly_plan) || 0), 0);
+              const totalSpent = mktChannels.reduce((s, c) => s + spentThisMonth(c.id), 0);
+              const totalRevenue = jobs.filter((j) => j.status === "done" && j.scheduled_date && j.scheduled_date >= monthStartIso).reduce((s, j) => s + (Number(j.report_paid) || 0), 0);
+              return (
+                <>
+                  <div className="kd-tabbar" style={{ marginBottom: 8 }}>
+                    <div className="kd-title" style={{ fontSize: 18 }}>Маркетинг · {monthStart.toLocaleDateString("ru-RU", { month: "long", year: "numeric" })}</div>
+                    <button className="kd-btn primary" onClick={() => setModal({ kind: "mktChannel" })}><Plus size={15} />Канал</button>
+                  </div>
+
+                  {/* Цель и бюджет */}
+                  <div className="kd-card" style={{ marginBottom: 12 }}>
+                    <div className="kd-section">Цель месяца</div>
+                    <div className="kd-row"><span>Цель по выручке</span><strong>{fmt(goal)} ₸</strong></div>
+                    <div className="kd-row"><span>Доля на рекламу</span><strong>{adPct}%</strong></div>
+                    <div className="kd-row total"><span>Бюджет на рекламу</span><strong style={{ color: "var(--primary-d)" }}>{fmt(budget)} ₸</strong></div>
+                    <div className="kd-muted" style={{ marginTop: 8 }}>Изменить цель и % можно в Настройках → «Маркетинг».</div>
+                  </div>
+
+                  {/* Итоги месяца */}
+                  <div className="kd-card" style={{ marginBottom: 12 }}>
+                    <div className="kd-section">Факт этого месяца</div>
+                    <div className="kd-row"><span>План пополнений</span><strong>{fmt(totalPlan)} ₸</strong></div>
+                    <div className="kd-row"><span>Уже пополнено</span><strong style={{ color: totalSpent >= totalPlan ? "#0E7C66" : "#B4650B" }}>{fmt(totalSpent)} ₸</strong></div>
+                    <div className="kd-row"><span>Осталось пополнить</span><strong>{fmt(Math.max(0, totalPlan - totalSpent))} ₸</strong></div>
+                    <div className="kd-row"><span>Выручка (done-заявки)</span><strong>{fmt(totalRevenue)} ₸</strong></div>
+                    <div className="kd-row total"><span>Общий ROI</span><strong style={{ color: totalSpent > 0 && totalRevenue / totalSpent >= 10 ? "#0E7C66" : "#B4650B" }}>{totalSpent > 0 ? (totalRevenue / totalSpent).toFixed(1) + "×" : "—"}</strong></div>
+                    <div className="kd-muted" style={{ marginTop: 8 }}>Ориентир: каждый 1 ₸ рекламы должен вернуть ≥10 ₸ выручки.</div>
+                  </div>
+
+                  {/* Каналы */}
+                  <div className="kd-list">
+                    {mktChannels.length === 0 && <div className="kd-empty">Каналов нет. Добавь через «+ Канал».</div>}
+                    {mktChannels.map((ch) => {
+                      const spent = spentThisMonth(ch.id);
+                      const plan = Number(ch.monthly_plan) || 0;
+                      const rev = revenueBySource(ch.source_key);
+                      const roi = spent > 0 ? rev / spent : null;
+                      const filled = plan > 0 ? Math.min(100, Math.round(spent / plan * 100)) : 0;
+                      const topups = topupsThisMonth(ch.id);
+                      return (
+                        <div key={ch.id} className="kd-card">
+                          <div className="kd-card-head">
+                            <div className="kd-pest">{ch.name}{ch.is_fixed && <span className="kd-brandtag" style={{ marginLeft: 8 }}>фикс</span>}</div>
+                            <span className="kd-badge" style={{ color: filled >= 100 ? "#0E7C66" : "#B4650B", background: filled >= 100 ? "#E4F3EE" : "#FBEDD9" }}>{filled}% плана</span>
+                          </div>
+                          <div className="kd-mktbar"><div className="kd-mktbarfill" style={{ width: `${filled}%` }} /></div>
+                          <div className="kd-tenderfin">
+                            <div><span className="kd-muted">План/мес</span><strong>{fmt(plan)} ₸</strong></div>
+                            <div><span className="kd-muted">Пополнено</span><strong>{fmt(spent)} ₸</strong></div>
+                            {ch.source_key && <div><span className="kd-muted">Выручка ({ch.source_key})</span><strong>{fmt(rev)} ₸</strong></div>}
+                            {ch.source_key && <div><span className="kd-muted">ROI</span><strong style={{ color: roi != null && roi >= 10 ? "#0E7C66" : roi != null ? "#B42318" : "var(--muted)" }}>{roi != null ? roi.toFixed(1) + "×" : "—"}</strong></div>}
+                          </div>
+                          {topups.length > 0 && (
+                            <div className="kd-returns" style={{ marginTop: 8 }}>
+                              {topups.map((t) => (
+                                <div key={t.id} className="kd-returnrow">
+                                  <span>✓ {fmt(t.amount)} ₸ · {isoToRu(t.topup_date)}{t.account_id ? " · " + (accountById(t.account_id)?.name || "") : ""}</span>
+                                  <button className="kd-btn ghost danger sm" onClick={() => askConfirm(`Удалить пополнение ${fmt(t.amount)} ₸?`, () => removeMktTopup(t))}><X size={12} /></button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          <div className="kd-actions">
+                            <button className="kd-btn primary sm" onClick={() => setModal({ kind: "mktTopup", channel: ch })}><Plus size={13} />Пополнил</button>
+                            <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "mktChannel", item: ch })}><Pencil size={13} />Изменить</button>
+                            <button className="kd-btn ghost danger sm" onClick={() => askConfirm(`Удалить канал «${ch.name}»? Пополнения тоже удалятся.`, () => removeMktChannel(ch))}><Trash2 size={13} /></button>
+                          </div>
+                          {!ch.source_key && <div className="kd-muted" style={{ marginTop: 6 }}>ROI не считается — не привязан источник. Укажи его в «Изменить», чтобы видеть отдачу.</div>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              );
+            })()}
+          </>
+        )}
+
+        {!loading && tab === "stock" && (
+          <div className="kd-list">
+            <div className="kd-card">
+              <div className="kd-section">Активы</div>
+              <div className="kd-row"><span>Препараты на складе</span><strong>{fmt(totalStockValue)} ₸</strong></div>
+              <div className="kd-row total"><span>Оборудование и СИЗ на руках у сотрудников</span><strong>{fmt(totalEquipValue)} ₸</strong></div>
+            </div>
+            {inventory.length === 0 && <div className="kd-empty">Склад пуст. Добавь препарат через «+ Препарат».</div>}
+            {inventory.map((c) => (
+              <div key={c.id} className={`kd-card ${c.low ? "low" : ""}`}>
+                <div className="kd-card-head">
+                  <div className="kd-pest">{c.name}{c.low && <span className="kd-lowtag">мало</span>}</div>
+                  <span className="kd-muted">{fmt(c.price_per_liter)} ₸/{chemUnit(c.unit_kind).big}</span>
+                </div>
+                <div className="kd-stockgrid">
+                  <div><span>Куплено</span><strong>{fmtAmount(c.purchased_ml, c.unit_kind)}</strong></div>
+                  <div><span>Ушло</span><strong>{fmtAmount(c.used, c.unit_kind)}</strong></div>
+                  <div><span>Остаток</span><strong style={{ color: c.low ? "#B42318" : "var(--primary)" }}>{fmtAmount(c.remaining, c.unit_kind)}</strong></div>
+                  <div><span>Стоимость остатка</span><strong>{fmt(c.stockValue)} ₸</strong></div>
+                </div>
+                {isAdmin && (
+                  <div className="kd-actions">
+                    <button className="kd-btn primary sm" onClick={() => setModal({ kind: "stockin", chem: c })}>+ Приход</button>
+                    <button className="kd-btn ghost danger sm" onClick={() => removeChem(c)}>Удалить</button>
+                  </div>
+                )}
+              </div>
+            ))}
+
+            <div className="kd-tabbar" style={{ marginTop: 6 }}>
+              <div className="kd-title" style={{ fontSize: 17 }}>Оборудование и СИЗ</div>
+              {isAdmin && <button className="kd-btn primary sm" onClick={() => setModal({ kind: "equip" })}><Plus size={14} />Позиция</button>}
+            </div>
+            {equipment.length === 0 && <div className="kd-empty">Пока ничего не заведено — генераторы, опрыскиватели, канистры, комбинезоны, перчатки и т.п.</div>}
+            {equipment.map((e) => {
+              const issuedQty = equipIssuedQty(e.id);
+              return (
+                <div key={e.id} className="kd-card">
+                  <div className="kd-card-head">
+                    <div className="kd-pest">{e.name}</div>
+                    <span className="kd-badge" style={{ color: "#7C3AED", background: "#F1ECFE" }}>{EQUIP_CATEGORIES[e.category] || e.category}</span>
+                  </div>
+                  <div className="kd-stockgrid">
+                    <div><span>Единица</span><strong>{e.unit}</strong></div>
+                    <div><span>Цена за ед.</span><strong>{fmt(e.price)} ₸</strong></div>
+                    <div><span>Выдано (на руках)</span><strong>{issuedQty} {e.unit}</strong></div>
+                    <div><span>Стоимость на руках</span><strong>{fmt(issuedQty * (Number(e.price) || 0))} ₸</strong></div>
+                  </div>
+                  {canAccess("action.team_manage") && (
+                    <div className="kd-actions">
+                      <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "equip", item: e })}><Pencil size={13} />Изменить</button>
+                      <button className="kd-btn ghost danger sm" onClick={() => removeEquipment(e)}>Удалить</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {!loading && tab === "team" && (
+          <div className="kd-list">
+            {canAccess("action.team_manage") && <div className="kd-card kd-access-card">
+              <div className="kd-tabbar" style={{ marginBottom: 12 }}>
+                <div><div className="kd-section" style={{ margin: 0 }}>Сотрудники и права доступа</div><div className="kd-muted">Добавление, блокировка, роли и персональные разрешения</div></div>
+                <button className="kd-btn primary" onClick={() => setModal({ kind: "userAccess", user: null })}><UserPlus size={15} />Добавить сотрудника</button>
+              </div>
+              <div className="kd-user-list">
+                {allProfiles.map((p) => {
+                  const authUser = authUsers.find((item) => item.id === p.id) || {};
+                  const roleInfo = ROLE_DEFINITIONS[p.role] || { label: p.role || "Без роли", color: "#6E7871" };
+                  const isSelf = p.id === session.user.id;
+                  return <div className={`kd-user-row ${p.is_active === false ? "inactive" : ""}`} key={p.id}>
+                    <div className="kd-tech-avatar">{(p.full_name || authUser.email || "?").slice(0, 1).toUpperCase()}</div>
+                    <div className="kd-user-main"><strong>{p.full_name || "Без имени"}</strong><span>{authUser.email || "Почта загружается…"}{p.phone ? ` · ${p.phone}` : ""}</span></div>
+                    <span className="kd-role-badge" style={{ color: roleInfo.color, borderColor: `${roleInfo.color}55`, background: `${roleInfo.color}12` }}>{roleInfo.label}</span>
+                    <span className={`kd-access-status ${p.is_active === false ? "off" : "on"}`}>{p.is_active === false ? "Отключён" : "Активен"}</span>
+                    <div className="kd-actions">
+                      {p.role !== "admin" && <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "userAccess", user: { ...p, email: authUser.email || "" } })}><ShieldCheck size={13} />Права</button>}
+                      {!isSelf && p.role !== "admin" && <button className="kd-btn ghost danger sm" onClick={() => askConfirm(`Удалить учётную запись «${p.full_name || authUser.email}» навсегда? История действий в журнале сохранится.`, () => deleteAdminUser({ ...p, email: authUser.email }), { confirmLabel: "Удалить навсегда" })}><Trash2 size={13} /></button>}
+                    </div>
+                  </div>;
+                })}
+              </div>
+            </div>}
+            <div className="kd-card">
+              <div className="kd-section" style={{ marginTop: 0 }}>Отчёты за период</div>
+              <DateFilterBar filter={teamRepFilter} onChange={setTeamRepFilter} hide={["tomorrow"]} />
+              {(() => {
+                const paidExp = expenses.filter((e) => e.status === "paid" && dateInFilter(e.expense_date || (e.created_at || "").slice(0, 10), teamRepFilter));
+                const byTechPay = {};
+                paidExp.forEach((e) => {
+                  if (!byTechPay[e.tech_id]) byTechPay[e.tech_id] = { salary: 0, travel: 0, other: 0, total: 0 };
+                  const t = EXPENSE_TYPES[e.type] !== undefined ? e.type : "other";
+                  byTechPay[e.tech_id][t] += Number(e.amount) || 0;
+                  byTechPay[e.tech_id].total += Number(e.amount) || 0;
+                });
+                return (
+                  <>
+                    <div className="kd-section">💰 Выплачено сотрудникам</div>
+                    {Object.keys(byTechPay).length === 0 && <div className="kd-muted">Выплат за период нет.</div>}
+                    {Object.entries(byTechPay).map(([tid, v]) => (
+                      <div className="kd-row" key={tid}>
+                        <span>{personName(tid)}</span>
+                        <span className="kd-twoval"><em>зп {fmt(v.salary)} · дор. {fmt(v.travel)}{v.other ? ` · др. ${fmt(v.other)}` : ""}</em><strong>{fmt(v.total)} ₸</strong></span>
+                      </div>
+                    ))}
+                  </>
+                );
+              })()}
+            </div>
+            <div className="kd-section">Остатки, выплаты и имущество дезинфекторов</div>
+            {techs.map((t) => {
+              const cnt = jobs.filter((j) => j.assigned_to === t.id).length;
+              const ledger = techLedger(t.id);
+              return (
+                <div key={t.id} className="kd-card">
+                  <div className="kd-card-head">
+                    <div className="kd-tech-row">
+                      <div className="kd-tech-avatar">{(t.full_name || "?").slice(0, 1)}</div>
+                      <div>
+                        <div className="kd-tech-name">{t.full_name || "(без имени)"}</div>
+                        <div className="kd-muted">{t.phone || "—"} · заявок: {cnt}</div>
+                        {techExtrasTotal(t.id) > 0 && <div className="kd-muted" style={{ color: "var(--violet)", fontWeight: 700 }}>🎁 бонусы {fmt(techBonusTotal(t.id))} ₸ · дорожные {fmt(techTravelTotal(t.id))} ₸</div>}
+                      </div>
+                    </div>
+                    <div className="kd-actions" style={{ marginBottom: 0 }}>
+                      {canAccess("action.team_manage") && <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "techedit", tech: t })}><Pencil size={13} />Данные</button>}
+                      {canAccess("action.stock_edit") && <button className="kd-btn primary sm" onClick={() => setModal({ kind: "handout", tech: t })}>Выдать / остаток</button>}
+                      {canAccess("action.finance_edit") && <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "expense", tech: t })}><Plus size={13} />Выплата</button>}
+                    </div>
+                  </div>
+                  {ledger.length === 0
+                    ? <div className="kd-muted" style={{ marginTop: 8 }}>Препараты этому сотруднику ещё не выдавались.</div>
+                    : (
+                      <div className="kd-ledger">
+                        <div className="kd-ledgerhead"><span>Препарат</span><span>Выдано</span><span>Расход</span><span>На руках</span></div>
+                        {ledger.map((r) => (
+                          <div className="kd-ledgerrow" key={r.chem.id}>
+                            <span className="kd-ledgername">{r.chem.name}</span>
+                            <span>{fmtAmount(r.received, r.chem.unit_kind)}</span>
+                            <span>{fmtAmount(r.consumed, r.chem.unit_kind)}</span>
+                            <strong style={{ color: r.balance < 0 ? "#B42318" : "var(--primary)" }}>{fmtAmount(r.balance, r.chem.unit_kind)}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  {(() => {
+                    const techExp = expenses.filter((e) => e.tech_id === t.id);
+                    if (techExp.length === 0) return null;
+                    const owed = techExp.filter((e) => e.status !== "paid").reduce((s, e) => s + (Number(e.amount) || 0), 0);
+                    return (
+                      <div className="kd-ledger">
+                        <div className="kd-ledgerhead" style={{ gridTemplateColumns: "1.4fr 1fr 1fr 1fr" }}><span>Выплата</span><span>Сумма</span><span>Статус</span><span></span></div>
+                        {techExp.map((e) => (
+                          <div className="kd-ledgerrow" key={e.id} style={{ gridTemplateColumns: "1.4fr 1fr 1fr 1fr" }}>
+                            <span className="kd-ledgername">{EXPENSE_TYPES[e.type] || e.type}{e.note ? " · " + e.note : ""}</span>
+                            <span>{fmt(e.amount)} ₸</span>
+                            <span style={{ color: e.status === "paid" ? "#0E7C66" : "#B42318", fontWeight: 700 }}>{e.status === "paid" ? "выплачено" : "к выплате"}</span>
+                            <span style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                              {canAccess("action.finance_edit") && <button className="kd-btn ghost sm" onClick={() => setExpenseStatus(e, e.status === "paid" ? "unpaid" : "paid")}>{e.status === "paid" ? "Отменить" : "Выплатить"}</button>}
+                              {canAccess("action.finance_edit") && <button className="kd-btn ghost danger sm" onClick={() => removeExpense(e)}><Trash2 size={13} /></button>}
+                            </span>
+                          </div>
+                        ))}
+                        {owed > 0 && <div className="kd-muted" style={{ marginTop: 6, fontWeight: 700, color: "#B42318" }}>К выплате всего: {fmt(owed)} ₸</div>}
+                      </div>
+                    );
+                  })()}
+                  <div className="kd-ledger">
+                    <div className="kd-tabbar" style={{ marginBottom: 8 }}>
+                      <span className="kd-section" style={{ margin: 0 }}>Оборудование</span>
+                      {canAccess("action.team_manage") && <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "issueEquip", tech: t })}><Plus size={13} />Выдать</button>}
+                    </div>
+                    {techEquipment(t.id).length === 0
+                      ? <div className="kd-muted">На руках оборудования нет.</div>
+                      : (<>
+                        <div className="kd-ledgerhead" style={{ gridTemplateColumns: "1.4fr .7fr 1fr 1fr 1.2fr" }}><span>Позиция</span><span>Кол-во</span><span>Выдано</span><span>Стоимость</span><span></span></div>
+                        {techEquipment(t.id).map((r) => (
+                          <div className="kd-ledgerrow" key={r.handout.id} style={{ gridTemplateColumns: "1.4fr .7fr 1fr 1fr 1.2fr" }}>
+                            <span className="kd-ledgername">{r.equip.name}{r.handout.note ? " · " + r.handout.note : ""}</span>
+                            <span>{r.handout.qty} {r.equip.unit}</span>
+                            <span>{isoToRu(r.handout.handout_date) || "—"}</span>
+                            <strong>{fmt((Number(r.handout.qty) || 0) * (Number(r.equip.price) || 0))} ₸</strong>
+                            <span style={{ display: "flex", gap: 5, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                              {canAccess("action.team_manage") && <><button className="kd-btn ghost sm" onClick={() => setModal({ kind: "transferEquip", handout: r.handout })}>Передать</button><button className="kd-btn ghost sm" onClick={() => setEquipStatus(r.handout, "returned")}>Возврат</button><button className="kd-btn ghost danger sm" onClick={() => setEquipStatus(r.handout, "broken")}>Сломано</button></>}
+                            </span>
+                          </div>
+                        ))}
+                      </>)}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {!loading && tab === "partners" && (
+          <div className="kd-list">
+            {partners.length === 0 && <div className="kd-empty">Партнёров пока нет. Добавь через «+ Партнёр» — имя, долю в % и правило цены повтора.</div>}
+            {partners.length > 0 && (
+              <div className="kd-searchbar" style={{ marginBottom: 4 }}>
+                <Search size={16} className="kd-search-icon" />
+                <input className="kd-search" value={partnerSearch} onChange={(e) => setPartnerSearch(e.target.value)} placeholder="Поиск партнёра по имени…" />
+              </div>
+            )}
+            {partners.filter((p) => !partnerSearch.trim() || norm(p.name).includes(norm(partnerSearch))).map((p) => {
+              const pj = jobs.filter((j) => j.partner_id === p.id);
+              const cnt = pj.length;
+              const owed = pj.filter((j) => j.status === "done" && !j.partner_paid).reduce((s, j) => s + partnerShareAmt(j), 0);
+              const paidOut = pj.filter((j) => j.status === "done" && j.partner_paid).reduce((s, j) => s + partnerShareAmt(j), 0);
+              return (
+                <div key={p.id} className="kd-card">
+                  <div className="kd-card-head">
+                    <button className="kd-partnername" onClick={() => setModal({ kind: "partnerJobs", partner: p })}>{p.name}</button>
+                    <span className="kd-badge" style={{ color: "#7C3AED", background: "#F1ECFE" }}>доля {p.default_share}%</span>
+                  </div>
+                  <div className="kd-meta">
+                    <span>Повтор: {repeatLabel(p.repeat_policy) || "не задан"}</span>
+                    <span>·</span><span>заявок: {cnt}</span>
+                  </div>
+                  <div className="kd-card-foot">
+                    <span className="kd-muted" style={{ color: owed > 0 ? "#B42318" : undefined, fontWeight: owed > 0 ? 700 : 400 }}>К выплате: {fmt(owed)} ₸</span>
+                    <span className="kd-muted paid">Выплачено: {fmt(paidOut)} ₸</span>
+                  </div>
+                  {canEditPartners && (
+                    <div className="kd-actions">
+                      <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "partnerJobs", partner: p })}>Заявки</button>
+                      <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "partner", partner: p })}>Изменить</button>
+                      <button className="kd-btn ghost danger sm" onClick={() => removePartner(p)}>Удалить</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {!loading && tab === "materials" && (
+          <div className="kd-list">
+            <div className="kd-title" style={{ fontSize: 18, marginBottom: 4 }}>Материалы компании</div>
+            <div className="kd-muted" style={{ marginBottom: 8 }}>Маркетинг и техника безопасности.{isAdmin ? " Ссылки меняются в Настройках → «Ссылки на Google Диск»." : ""}</div>
+            {DRIVE_LINKS.filter((l) => l.place === "materials").map((l) => (
+              <DriveLinkCard key={l.key} link={l} url={settings[l.key]} isAdmin={isAdmin} />
+            ))}
+          </div>
+        )}
+
+        {!loading && tab === "knowledge" && (
+          <div className="kd-list">
+            <div className="kd-title" style={{ fontSize: 18, marginBottom: 4 }}>База знаний</div>
+            <div className="kd-muted" style={{ marginBottom: 8 }}>Обучение: скрипты продаж и разговора с клиентами.{isAdmin ? " Ссылки меняются в Настройках → «Ссылки на Google Диск»." : ""}</div>
+            {DRIVE_LINKS.filter((l) => l.place === "knowledge").map((l) => (
+              <DriveLinkCard key={l.key} link={l} url={settings[l.key]} isAdmin={isAdmin} />
+            ))}
+          </div>
+        )}
+
+        {!loading && tab === "docs" && (() => {
+          const total = docs.reduce((s, d) => s + (Number(d.amount) || 0), 0);
+          const paid = docs.filter((d) => d.status === "paid").reduce((s, d) => s + (Number(d.amount) || 0), 0);
+          const pending = total - paid;
+          return (
+            <div className="kd-list">
+              {DRIVE_LINKS.filter((l) => l.place === "docs").map((l) => (
+                <DriveLinkCard key={l.key} link={l} url={settings[l.key]} isAdmin={isAdmin} />
+              ))}
+              <div className="kd-card">
+                <div className="kd-section">Отдельный отчёт по документам (не входит в заработок команды)</div>
+                <div className="kd-row"><span>Всего начислено</span><strong>{fmt(total)} ₸</strong></div>
+                <div className="kd-row"><span>Оплачено</span><strong style={{ color: "#0E7C66" }}>{fmt(paid)} ₸</strong></div>
+                <div className="kd-row total"><span>Ожидает оплаты</span><strong style={{ color: pending > 0 ? "#B42318" : undefined }}>{fmt(pending)} ₸</strong></div>
+              </div>
+              {docs.length === 0 && <div className="kd-empty">Записей пока нет. Добавь через «+ Документ»: тип, клиент, сумму или % от суммы клиента.</div>}
+              {docs.map((d) => {
+                const stt = DOC_STATUS[d.status] || DOC_STATUS.todo;
+                return (
+                  <div key={d.id} className="kd-card">
+                    <div className="kd-card-head">
+                      <div className="kd-pest">{d.type}</div>
+                      <span className="kd-badge" style={{ color: stt.color, background: stt.bg }}>{stt.label}</span>
+                    </div>
+                    <div className="kd-meta">
+                      {d.partner_id && <span>{partnerById(d.partner_id)?.name || "партнёр"}</span>}
+                      {d.partner_id && <span>·</span>}
+                      <span>{d.client || "без описания"}</span>
+                      {d.amount_mode === "percent" && <><span>·</span><span>{d.percent}% от {fmt(d.base_sum)} ₸</span></>}
+                    </div>
+                    <div className="kd-card-foot"><strong>{fmt(d.amount)} ₸</strong>{d.note && <span className="kd-muted">{d.note}</span>}</div>
+                    {canEditDocs && <div className="kd-actions">
+                      {d.status !== "done" && <button className="kd-btn ghost sm" onClick={() => setDocStatus(d, "done")}>Сделано</button>}
+                      {d.status !== "paid" && <button className="kd-btn primary sm" onClick={() => setDocStatus(d, "paid")}>Оплачено</button>}
+                      {d.status === "paid" && <button className="kd-btn ghost sm" onClick={() => setDocStatus(d, "done")}>Снять оплату</button>}
+                      <button className="kd-btn ghost sm" onClick={() => setModal({ kind: "doc", doc: d })}>Изменить</button>
+                      <button className="kd-btn ghost danger sm" onClick={() => removeDoc(d)}>Удалить</button>
+                    </div>}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
+
+        {!loading && tab === "journal" && (
+          <div className="kd-card">
+            {audit.length === 0 && <div className="kd-muted">Пока нет записей.</div>}
+            {audit.map((a) => (
+              <div key={a.id} className="kd-logrow">
+                <span className="kd-logwhen">{fmtTs(a.ts)}</span>
+                <span className={`kd-actor ${a.actor === "Админ" ? "admin" : ""}`}>{a.actor}</span>
+                <span className="kd-logaction">{a.action}</span>
+                <span className="kd-logsum">{a.summary}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!loading && tab === "trash" && (
+          <div className="kd-list">
+            {trash.length === 0 && <div className="kd-empty">Корзина пуста. Удалённые заявки можно восстановить отсюда.</div>}
+            {trash.map((row) => (
+              <div key={row.id} className="kd-card">
+                <div className="kd-card-head"><div className="kd-pest">{row.job.pest}</div><span className="kd-muted">удалено {fmtTs(row.deleted_at)}</span></div>
+                <div className="kd-addr"><AddressText text={row.job.address} /></div>
+                <div className="kd-card-foot"><span className="kd-muted">Удалил: {row.deleted_by}</span>
+                  {row.job.report_paid != null && <span className="kd-muted">Было оплачено: {fmt(row.job.report_paid)} ₸</span>}</div>
+                <div className="kd-actions">
+                  <button className="kd-btn primary sm" onClick={() => restore(row)}>Восстановить</button>
+                  <button className="kd-btn ghost danger sm" onClick={() => purge(row)}>Удалить навсегда</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </main>
+      </div>
+
+      {modal?.kind === "new" && <JobFormModal title="Новая заявка" submitLabel="Создать" partners={partners} techs={techs} existingJobs={jobs} sources={sources} pestTypes={pestTypes} pestGuide={pestGuideObj} defaultGuarantee={defaultGuarantee} onClose={() => setModal(null)} onSave={createJob} />}
+      {modal?.kind === "edit" && <JobFormModal title="Изменить заявку" submitLabel="Сохранить" keepStatus partners={partners} techs={techs} existingJobs={jobs} sources={sources} pestTypes={pestTypes} pestGuide={pestGuideObj} initial={jobToForm(modal.job)} onClose={() => setModal(null)} onSave={(payload) => editJob(modal.job, payload)} />}
+      {modal?.kind === "assign" && <AssignModal job={modal.job} techs={techs} onClose={() => setModal(null)} onSave={assignJob} assignInfo={(techId) => {
+        const d = modal.job.scheduled_date;
+        if (!d) return { off: false, night: false, count: 0, score: 50, reasons: ["дата ещё не задана"] };
+        const off = daysOff.some((x) => x.tech_id === techId && x.off_date === d);
+        const prev = parseIso(d); prev.setDate(prev.getDate() - 1); const prevIso = isoOf(prev);
+        // ночной выезд: заявка накануне с началом >= 22:00 ИЛИ в этот же день 00:00–05:59
+        const night = jobs.some((j) => {
+          if (j.assigned_to !== techId || j.status === "canceled") return false;
+          const r = timeRangeMin(j.scheduled_time);
+          if (!r) return false;
+          if (j.scheduled_date === prevIso && r.from >= 22 * 60) return true;
+          if (j.scheduled_date === d && r.from < 6 * 60) return true;
+          return false;
+        });
+        const count = jobs.filter((j) => j.assigned_to === techId && j.scheduled_date === d && j.status !== "canceled").length;
+        const addressWords = (text) => norm(addressPlain(text)).split(/[^a-zа-яё0-9]+/i).filter((word) => word.length >= 5 && !["улица", "квартира", "микрорайон", "алматы"].includes(word));
+        const targetWords = new Set(addressWords(modal.job.address));
+        const sameArea = jobs.some((j) => j.assigned_to === techId && j.scheduled_date === d && j.status !== "canceled" && addressWords(j.address).some((word) => targetWords.has(word)));
+        const techJobIds = new Set(jobs.filter((j) => j.assigned_to === techId).map((j) => String(j.id)));
+        const ratings = qualityChecks.filter((q) => techJobIds.has(String(q.job_id)) && Number(q.rating) > 0).slice(0, 20).map((q) => Number(q.rating));
+        const avgRating = ratings.length ? ratings.reduce((sum, value) => sum + value, 0) / ratings.length : 0;
+        const score = Math.max(0, Math.round(100 - count * 18 - (off ? 100 : 0) - (night ? 35 : 0) + (sameArea ? 18 : 0) + (avgRating ? (avgRating - 4) * 8 : 0)));
+        const reasons = [count === 0 ? "свободен в этот день" : `${count} заяв. в этот день`, sameArea ? "есть выезд рядом" : "", avgRating ? `качество ${avgRating.toFixed(1)}/5` : ""].filter(Boolean);
+        return { off, night, count, score, reasons };
+      }} />}
+      {modal?.kind === "report" && <ReportModal job={modal.job} partnerName={partnerNameOf(modal.job)} chemicals={chemicals} primaryReport={(() => {
+        if (!modal.job.repeat_of) return null;
+        const p = jobs.find((x) => x.id === modal.job.repeat_of);
+        if (!p) return null;
+        return {
+          paid: Number(p.report_paid) || 0,
+          techName: techById(p.assigned_to)?.full_name || "—",
+          date: p.scheduled_date,
+          chems: (p.chemicals || []).map((rc) => ({ name: rc.name || (chemicals.find((c) => c.id === rc.chemical_id)?.name) || "препарат", amount: rc.amount })),
+        };
+      })()} onClose={() => setModal(null)} onSave={submitReport} />}
+      {modal?.kind === "reportSuccess" && <ReportSuccessModal onClose={() => setModal(null)} />}
+      {modal?.kind === "view" && <ViewModal job={modal.job} partnerName={partnerNameOf(modal.job)} chemicals={chemicals} performedBy={profileById(modal.job.reported_by)?.full_name || techById(modal.job.assigned_to)?.full_name} onClose={() => setModal(null)} />}
+      {modal?.kind === "details" && <DetailsModal job={modal.job} header={brandHeaderOf(modal.job)} partnerName={partnerNameOf(modal.job)} onReport={() => setModal({ kind: "report", job: modal.job })} onClose={() => setModal(null)} />}
+      {modal?.kind === "proof" && <ProofModal job={modal.job} proof={proofByJob(modal.job.id)} media={proofMedia} onClose={() => setModal(null)} onSave={saveJobProof} />}
+      {modal?.kind === "history" && <HistoryModal
+        job={modal.job} jobs={jobs} followups={followups} qualityChecks={qualityChecks} contracts={contracts}
+        events={clientEvents} feedback={publicFeedback} profiles={allProfiles} canPlanFollowup={canEditJobs} partnerNameOf={partnerNameOf}
+        onAddNote={addClientNote} onCopyPublicLink={copyPublicJobLink}
+        onPlanFollowup={(j) => setModal({ kind: "followup", job: j, defaultKind: "lost" })}
+        onClose={() => setModal(null)}
+        onOpen={(j) => setModal(j.status === "done" ? { kind: "view", job: j } : canEditJobs ? { kind: "edit", job: j } : { kind: "details", job: j })} />}
+      {modal?.kind === "addchem" && <AddChemModal onClose={() => setModal(null)} onSave={addChem} />}
+      {modal?.kind === "stockin" && <StockInModal chem={modal.chem} onClose={() => setModal(null)} onSave={stockIn} />}
+      {modal?.kind === "handout" && <HandoutModal tech={modal.tech} chemicals={chemicals} onClose={() => setModal(null)} onSave={addHandout} />}
+      {modal?.kind === "expense" && <ExpenseModal tech={modal.tech} onClose={() => setModal(null)} onSave={saveExpense} />}
+      {modal?.kind === "techedit" && <TechEditModal tech={modal.tech} onClose={() => setModal(null)} onSave={(payload) => editTechProfile(modal.tech, payload)} />}
+      {modal?.kind === "userAccess" && <UserAccessModal user={modal.user} onClose={() => setModal(null)} onSave={saveAdminUser} />}
+      {modal?.kind === "equip" && <EquipModal item={modal.item} onClose={() => setModal(null)} onSave={saveEquipment} />}
+      {modal?.kind === "issueEquip" && <IssueEquipModal tech={modal.tech} equipment={equipment} onClose={() => setModal(null)} onSave={issueEquipment} />}
+      {modal?.kind === "transferEquip" && <TransferEquipModal handout={modal.handout} techs={techs.filter((t) => t.id !== modal.handout.tech_id)} onClose={() => setModal(null)} onSave={(newTechId, note) => transferEquipment(modal.handout, newTechId, note)} />}
+      {modal?.kind === "reportEquip" && <ReportEquipModal equip={modal.equip} status={modal.status} onClose={() => setModal(null)} onSave={(note) => reportEquipIssue(modal.handout, modal.status, note)} />}
+      {modal?.kind === "settings" && (
+        <SettingsModal
+          settings={settings} sources={sources} pestTypes={pestTypes} expCats={expCats} accounts={accounts}
+          tabOrder={savedOrder.length ? [...ADMIN_TAB_ORDER].sort((a, b) => { const ia = savedOrder.indexOf(a), ib = savedOrder.indexOf(b); return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib); }) : ADMIN_TAB_ORDER}
+          leadStages={leadStages} onAddLeadStage={addLeadStage} onRemoveLeadStage={removeLeadStage} onMoveLeadStage={moveLeadStage}
+          onClose={() => setModal(null)}
+          onSaveSetting={saveAppSetting}
+          onSetTheme={setTheme}
+          onAddSource={(name) => addCatalogItem("client_sources", name)}
+          onRemoveSource={(item) => removeCatalogItem("client_sources", item)}
+          onAddPest={(name) => addCatalogItem("pest_types", name)}
+          onRemovePest={(item) => removeCatalogItem("pest_types", item)}
+          onAddExpCat={addExpCat}
+          onRemoveExpCat={removeExpCat}
+        />
+      )}
+      {modal?.kind === "opex" && <OpexModal opex={modal.opex} expCats={expCats} onClose={() => setModal(null)} onSave={saveOpex} />}
+      {modal?.kind === "move" && <MoveModal move={modal.move} accounts={accounts} expCats={expCats} onClose={() => setModal(null)} onSave={saveMove} />}
+      {modal?.kind === "account" && <AccountModal item={modal.item} onClose={() => setModal(null)} onSave={saveAccount} onRemove={removeAccount} />}
+      {modal?.kind === "confirmDeposit" && <ConfirmDepositModal dep={modal.dep} techName={techById(modal.dep.tech_id)?.full_name} accounts={accounts} defaultAccountId={cashDepositAccountId} onClose={() => setModal(null)} onConfirm={(accId) => { decideDeposit(modal.dep, "confirmed", null, accId); setModal(null); }} />}
+      {modal?.kind === "deposit" && <DepositModal max={modal.max} onClose={() => setModal(null)} onSave={requestDeposit} />}
+      {modal?.kind === "cancelJob" && <CancelJobModal job={modal.job} onClose={() => setModal(null)} onSave={(reason) => cancelJob(modal.job, reason)} />}
+      {modal?.kind === "task" && <TaskModal task={modal.task} people={assignableProfiles} onClose={() => setModal(null)} onSave={saveTask} />}
+      {modal?.kind === "tender" && <TenderModal tender={modal.tender} partners={partners} onClose={() => setModal(null)} onSave={saveTender} />}
+      {modal?.kind === "lead" && <LeadModal lead={modal.lead} stages={leadStages} sources={sources} onClose={() => setModal(null)} onSave={saveLead} />}
+      {modal?.kind === "mktChannel" && <MktChannelModal item={modal.item} sources={sources} onClose={() => setModal(null)} onSave={saveMktChannel} />}
+      {modal?.kind === "mktTopup" && <MktTopupModal channel={modal.channel} accounts={accounts} onClose={() => setModal(null)} onSave={(amount, date, accId, note) => addMktTopup(modal.channel.id, amount, date, accId, note)} />}
+      {modal?.kind === "dayOff" && <DayOffModal techs={techs} defaultDate={modal.date || scheduleDate} daysOff={daysOff} personName={personName} onClose={() => setModal(null)} onAdd={addDayOff} onRemove={removeDayOff} />}
+      {modal?.kind === "offCalendar" && <OffCalendarModal techs={techs} daysOff={daysOff} personName={personName} defaultDate={scheduleDate} onClose={() => setModal(null)} onPickDay={(iso) => setModal({ kind: "dayOff", date: iso })} />}
+      {modal?.kind === "transferPay" && <TransferPayModal job={modal.job} accounts={accounts} onClose={() => setModal(null)} onConfirm={(accId, date) => markTransferPaid(modal.job, accId, date)} />}
+      {modal?.kind === "techExtras" && <TechExtrasModal job={modal.job} techName={techById(modal.job.assigned_to)?.full_name} onClose={() => setModal(null)} onSave={(bonus, travel) => saveTechExtras(modal.job, bonus, travel)} />}
+      {modal?.kind === "requestEdit" && <RequestEditModal job={modal.job} onClose={() => setModal(null)} onSave={(reason) => requestReportEdit(modal.job, reason)} />}
+      {modal?.kind === "executorDone" && <ExecutorDoneModal job={modal.job} partnerName={partnerById(modal.job.executor_partner_id)?.name} accounts={accounts} defaultAccountId={settings.cash_account_id || ""} onClose={() => setModal(null)} onConfirm={(amount, settlement, accId, date) => markExecutorDone(modal.job, amount, settlement, accId, date)} />}
+      {modal?.kind === "leadStageSelect" && <LeadStageSelectModal lead={modal.lead} stages={leadStages} onClose={() => setModal(null)} onPick={(sid) => { setLeadStage(modal.lead, sid); setModal(null); }} />}
+      {modal?.kind === "guarantee" && <GuaranteeModal tenderId={modal.tenderId} onClose={() => setModal(null)} onSave={saveGuarantee} />}
+      {modal?.kind === "payGuarantee" && <PayGuaranteeModal g={modal.g} accounts={accounts} onClose={() => setModal(null)} onConfirm={(accId, date) => markGuaranteePaid(modal.g, accId, date)} />}
+      {modal?.kind === "returnGuarantee" && <ReturnGuaranteeModal g={modal.g} remaining={modal.remaining} accounts={accounts} onClose={() => setModal(null)} onConfirm={(amount, date, accId, note) => addGuaranteeReturn(modal.g, amount, date, accId, note)} />}
+      {modal?.kind === "rejectDeposit" && <RejectDepositModal dep={modal.dep} techName={techById(modal.dep.tech_id)?.full_name} onClose={() => setModal(null)} onSave={(adminNote) => { decideDeposit(modal.dep, "rejected", adminNote); setModal(null); }} />}
+      {modal?.kind === "partner" && <PartnerModal partner={modal.partner} onClose={() => setModal(null)} onSave={savePartner} />}
+      {modal?.kind === "partnerJobs" && <PartnerJobsModal partner={modal.partner} jobs={jobs.filter((j) => j.partner_id === modal.partner.id)} shareOf={partnerShareAmt} onClose={() => setModal(null)}
+        onOpenClient={(phone) => { setSearch(phone); setTab("done"); setModal(null); }} />}
+      {modal?.kind === "doc" && <DocModal doc={modal.doc} partners={partners} onClose={() => setModal(null)} onSave={saveDoc} />}
+      {modal?.kind === "economics" && <JobEconomicsModal job={modal.job} economics={jobEconomics(modal.job)} onClose={() => setModal(null)} onSave={(payload) => saveJobEconomics(modal.job, payload)} />}
+      {modal?.kind === "followup" && <FollowupModal followup={modal.followup} job={modal.job} lead={modal.lead} defaultKind={modal.defaultKind || "lost"} people={allProfiles.filter((p) => p.role === "admin" || p.role === "manager")} onClose={() => setModal(null)} onSave={saveFollowup} />}
+      {modal?.kind === "quality" && <QualityModal job={modal.job} check={qualityByJob(modal.job.id)} defaultReviewUrl={settings.review_url || ""} onClose={() => setModal(null)} onSave={(payload, existing) => saveQualityCheck(modal.job, payload, existing)} />}
+      {modal?.kind === "contract" && <ContractModal contract={modal.contract} people={allProfiles.filter((p) => p.role === "admin" || p.role === "manager")} onClose={() => setModal(null)} onSave={saveContract} />}
+      {confirmState && (
+        <ConfirmModal message={confirmState.message} danger={confirmState.danger} confirmLabel={confirmState.confirmLabel}
+          onCancel={() => setConfirmState(null)}
+          onConfirm={() => { confirmState.onYes(); setConfirmState(null); }} />
+      )}
+      {toast && <div className="kd-toast">{toast}</div>}
+    </div>
+  );
+}
