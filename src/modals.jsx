@@ -2345,5 +2345,55 @@ function ContractModal({ contract, people = [], onClose, onSave }) {
     <label className="kd-check"><input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} /><span>Договор активен</span></label>
   </ModalShell>;
 }
+function UserAccessModal({ user, onClose, onSave }) {
+  const isEdit = !!user?.id;
+  const [email, setEmail] = useState(user?.email || "");
+  const [password, setPassword] = useState("");
+  const [fullName, setFullName] = useState(user?.full_name || "");
+  const [phone, setPhone] = useState(user?.phone || "");
+  const [role, setRole] = useState(user?.role || "tech");
+  const [isActive, setIsActive] = useState(user?.is_active !== false);
+  const [saving, setSaving] = useState(false);
 
-export { AccountModal, AddChemModal, AssignModal, CancelJobModal, CashRevisionModal, CatalogList, ConfirmDepositModal, ConfirmModal, ContractModal, DayOffModal, DepositModal, DetailsModal, DocModal, EquipModal, ExecutorDoneModal, ExpenseModal, Field, FollowupModal, GuaranteeModal, HandoutModal, HistoryModal, IssueEquipModal, JobCard, JobEconomicsModal, JobFormModal, LeadModal, LeadStageSelectModal, MktChannelModal, MktTopupModal, ModalShell, MoveModal, OffCalendarModal, OpexModal, PartnerJobsModal, PartnerModal, PayGuaranteeModal, ProofModal, QualityModal, RejectDepositModal, RepeatCard, ReportEquipModal, ReportModal, ReportSuccessModal, RequestEditModal, ReturnGuaranteeModal, SettingsModal, SettingsSection, StockInModal, TaskModal, TechEditModal, TechExtrasModal, TenderModal, TransferEquipModal, TransferPayModal, ViewModal, jobToForm };
+  const roleOptions = [
+    { value: "tech", label: "Дезинфектор" },
+    { value: "manager", label: "Менеджер" },
+    { value: "marketer", label: "Маркетолог" },
+    { value: "accountant", label: "Бухгалтер" },
+    { value: "tender", label: "Тендерный специалист" },
+    { value: "curator", label: "Куратор" },
+  ];
+
+  async function save() {
+    setSaving(true);
+    await onSave({
+      id: user?.id,
+      email: email.trim(),
+      password: password.trim() || undefined,
+      full_name: fullName.trim(),
+      phone: phone.trim() || null,
+      role,
+      is_active: isActive,
+    });
+    setSaving(false);
+  }
+
+  const canSave = fullName.trim() && role && (isEdit || (email.trim() && password.trim().length >= 8));
+
+  return <ModalShell title={isEdit ? "Права доступа" : "Новый сотрудник"} onClose={onClose} footer={<>
+    <button className="kd-btn ghost" onClick={onClose}>Отмена</button>
+    <button className="kd-btn primary" disabled={!canSave || saving} onClick={save}>{saving ? "…" : "Сохранить"}</button>
+  </>}>
+    <Field label="Имя"><input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Имя сотрудника" /></Field>
+    <Field label="Телефон"><input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+7 ..." /></Field>
+    <Field label="Почта"><input value={email} onChange={(e) => setEmail(e.target.value)} disabled={isEdit} placeholder="email@example.com" /></Field>
+    {!isEdit && <Field label="Пароль (минимум 8 символов)"><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></Field>}
+    <Field label="Роль">
+      <select value={role} onChange={(e) => setRole(e.target.value)}>
+        {roleOptions.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+      </select>
+    </Field>
+    <label className="kd-check"><input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} /><span>Доступ активен</span></label>
+  </ModalShell>;
+}
+export { AccountModal, AddChemModal, AssignModal, CancelJobModal, CashRevisionModal, CatalogList, ConfirmDepositModal, ConfirmModal, ContractModal, DayOffModal, DepositModal, DetailsModal, DocModal, EquipModal, ExecutorDoneModal, ExpenseModal, Field, FollowupModal, GuaranteeModal, HandoutModal, HistoryModal, IssueEquipModal, JobCard, JobEconomicsModal, JobFormModal, LeadModal, LeadStageSelectModal, MktChannelModal, MktTopupModal, ModalShell, MoveModal, OffCalendarModal, OpexModal, PartnerJobsModal, PartnerModal, PayGuaranteeModal, ProofModal, QualityModal, RejectDepositModal, RepeatCard, ReportEquipModal, ReportModal, ReportSuccessModal, RequestEditModal, ReturnGuaranteeModal, SettingsModal, SettingsSection, StockInModal, TaskModal, TechEditModal, TechExtrasModal, TenderModal, TransferEquipModal, TransferPayModal, UserAccessModal, ViewModal, jobToForm };
