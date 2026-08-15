@@ -60,7 +60,7 @@ function JobCard({ job, isAdmin, assignedName, partnerName, partnerRepeat, share
   const stage = WORK_STAGE[stageKey];
   const isPartnerJob = job.brand === "partner" || !!job.partner_id || !!job.partner_name;
   const visiblePartnerName = isPartnerJob ? (partnerName || job.partner_name || "Партнёр не указан") : "";
-  const brandLabel = job.brand === "Sanitex" ? "Sanitex" : isPartnerJob ? "Партнёрская" : "KazDez";
+  const brandLabel = job.brand === "HalykSez" ? "HalykSez" : isPartnerJob ? "Партнёрская" : "HimZona";
   const needsFollowup = job.type === "Первичная" && job.status === "done" && !job.repeat_state && daysSince(job.reported_at) >= 5;
   const phoneDigits = String(job.client_phone || "").replace(/\D/g, "");
   const mapUrl = yandexMapUrl(job.address);
@@ -282,13 +282,13 @@ function jobToForm(job) {
     p1label: po[0]?.label || "С запахом", p1amount: po[0]?.amount ?? "",
     p2label: po[1]?.label || "Без запаха", p2amount: po[1]?.amount ?? "",
     client_phone: job.client_phone || "+7 ", contact_name: job.contact_name || "", extra_contacts: Array.isArray(job.extra_contacts) ? job.extra_contacts : [], guarantee_months: job.guarantee_months ?? 6,
-    brand: job.brand || "KazDez", partner_id: job.partner_id || "", partner_share: job.partner_share ?? "",
+    brand: job.brand || "HimZona", partner_id: job.partner_id || "", partner_share: job.partner_share ?? "",
     note: job.note || "", assigned_to: job.assigned_to || "", executor_kind: job.executor_partner_id ? "partner" : "tech", executor_partner_id: job.executor_partner_id || "", executor_share_pct: job.executor_share_pct ?? "", joint_work: !!job.joint_work, joint_supplier: job.joint_supplier || "us", joint_cost_share: job.joint_cost_share ?? "", partner_comp: job.partner_comp ?? "",
   };
 }
 
 const JOB_DRAFT_KEY = "kazdez-new-job-draft-v2";
-const emptyJobForm = (defaultGuarantee) => ({ type: "Первичная", scheduled_date: "", time_from: "", time_to: "", address: "", floor: "", area: "", source: "", pest: "", p1label: "Стоимость", p1amount: "", p2label: "Без запаха", p2amount: "", client_phone: "+7 ", contact_name: "", extra_contacts: [], guarantee_months: defaultGuarantee, brand: "KazDez", partner_id: "", partner_share: "", note: "", assigned_to: "", executor_kind: "tech", executor_partner_id: "", executor_share_pct: "", joint_work: false, joint_supplier: "us", joint_cost_share: "", partner_comp: "" });
+const emptyJobForm = (defaultGuarantee) => ({ type: "Первичная", scheduled_date: "", time_from: "", time_to: "", address: "", floor: "", area: "", source: "", pest: "", p1label: "Стоимость", p1amount: "", p2label: "Без запаха", p2amount: "", client_phone: "+7 ", contact_name: "", extra_contacts: [], guarantee_months: defaultGuarantee, brand: "HimZona", partner_id: "", partner_share: "", note: "", assigned_to: "", executor_kind: "tech", executor_partner_id: "", executor_share_pct: "", joint_work: false, joint_supplier: "us", joint_cost_share: "", partner_comp: "" });
 
 function JobFormModal({ initial, title, submitLabel, keepStatus, partners = [], techs = [], existingJobs = [], sources = [], pestTypes = [], pestGuide = {}, defaultGuarantee = 6, onClose, onSave }) {
   const draftRef = useRef(undefined);
@@ -384,7 +384,7 @@ function JobFormModal({ initial, title, submitLabel, keepStatus, partners = [], 
       </div>}
       {formMode === "expanded" && <>
         <div className="kd-grid2">
-          <Field label="Бренд"><select value={f.brand} onChange={onBrand}><option value="KazDez">KazDez</option><option value="Sanitex">Sanitex</option><option value="partner">Партнёрская</option></select></Field>
+          <Field label="Бренд"><select value={f.brand} onChange={onBrand}><option value="HimZona">HimZona</option><option value="HalykSez">HalykSez</option><option value="partner">Партнёрская</option></select></Field>
           <Field label="Тип"><select value={f.type} onChange={set("type")}><option>Первичная</option><option>Вторичная</option><option>Плановая</option><option>Тендерная</option><option>Гарантийная</option><option>Осмотр</option></select></Field>
         </div>
       {f.brand === "partner" && (
