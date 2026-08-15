@@ -1469,7 +1469,7 @@ function SettingsModal({ settings, sources, pestTypes, expCats, accounts = [], t
         </SettingsSection>
 
         <SettingsSection title="Реквизиты компании" subtitle="Для гарантийного сертификата и акта" open={openSection === "company"} onToggle={() => toggle("company")}>
-          <Field label="Название компании"><input defaultValue={settings.company_name ?? ""} onBlur={(e) => onSaveSetting("company_name", e.target.value.trim() || null)} placeholder="ТОО «KazDez»" /></Field>
+          <Field label="Название компании"><input defaultValue={settings.company_name ?? ""} onBlur={(e) => onSaveSetting("company_name", e.target.value.trim() || null)} placeholder="ТОО «HimZona»" /></Field>
           <div className="kd-grid2">
             <Field label="БИН"><input defaultValue={settings.company_bin ?? ""} inputMode="numeric" onBlur={(e) => onSaveSetting("company_bin", e.target.value.trim() || null)} placeholder="000000000000" /></Field>
             <Field label="Телефон"><input defaultValue={settings.company_phone ?? ""} onBlur={(e) => onSaveSetting("company_phone", e.target.value.trim() || null)} placeholder="+7 700 000 00 00" /></Field>
